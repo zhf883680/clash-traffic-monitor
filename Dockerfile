@@ -8,6 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY main.go main_test.go ./
+COPY web ./web
 
 RUN CGO_ENABLED=1 GOOS=linux go test ./...
 RUN CGO_ENABLED=1 GOOS=linux go build -o traffic-monitor-enhanced main.go
