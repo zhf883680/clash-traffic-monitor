@@ -59,3 +59,7 @@ docker run -d \
 因为这个项目主要运行在 OpenWrt 环境，当前默认移除了进程维度相关展示。
 
 如果你需要进程模块，可以在此基础上自行 fork 后补充。
+
+## 致谢
+
+页面接口参考了 [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd)。
