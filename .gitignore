@@ -7,5 +7,6 @@ data/
 traffic-monitor-enhanced
 dist/
 .codex
-__debug_bin3709893794
+__debug*
 .idea/
+

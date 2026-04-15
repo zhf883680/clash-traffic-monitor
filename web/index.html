@@ -94,29 +94,17 @@
       }
 
       .brand-mark {
-        width: 42px;
-        height: 42px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 14px;
-        background: linear-gradient(135deg, var(--accent), #7562ff);
-        color: #fff;
-        font-size: 20px;
-        font-weight: 800;
-        box-shadow: 0 12px 24px rgba(95, 70, 255, 0.2);
+        display: none;
       }
 
       .brand-copy h1 {
         margin: 0;
-        font-size: 22px;
+        font-size: 18px;
         line-height: 1.1;
       }
 
       .brand-copy p {
-        margin: 6px 0 0;
-        color: var(--muted);
-        font-size: 13px;
+        display: none;
       }
 
       .dimension-tabs {
@@ -243,34 +231,6 @@
         color: #d14c58;
       }
 
-      .topbar-meta {
-        margin-top: 12px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 14px;
-        flex-wrap: wrap;
-      }
-
-      .view-hint {
-        color: var(--muted);
-        font-size: 13px;
-      }
-
-      .view-hint strong {
-        color: var(--text);
-      }
-
-      .status {
-        min-height: 18px;
-        color: var(--muted);
-        font-size: 13px;
-      }
-
-      .status.error {
-        color: #d14c58;
-      }
-
       .cards {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -333,9 +293,7 @@
       }
 
       .card-note {
-        margin-top: 6px;
-        color: var(--muted);
-        font-size: 12px;
+        display: none;
       }
 
       .dashboard {
@@ -383,25 +341,69 @@
         font-size: 18px;
       }
 
-      .panel-subtitle {
-        margin-top: 6px;
-        color: var(--muted);
-        font-size: 13px;
-        line-height: 1.55;
-      }
-
-      .panel-aside {
-        color: var(--muted);
-        font-size: 12px;
-        white-space: nowrap;
-      }
-
       .scroll-wrap {
         min-height: 0;
         overflow: auto;
         border-radius: 18px;
         border: 1px solid var(--line);
         background: linear-gradient(180deg, rgba(248, 251, 255, 0.96), rgba(243, 247, 252, 0.86));
+      }
+
+      .ranking-list {
+        min-height: 0;
+        overflow: auto;
+        padding-right: 8px;
+      }
+
+      .ranking-item {
+        margin-bottom: 10px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          background-color 180ms ease,
+          border-color 180ms ease,
+          box-shadow 180ms ease,
+          transform 180ms ease;
+      }
+
+      .ranking-item:hover {
+        transform: translateY(-1px);
+        border-color: rgba(95, 70, 255, 0.16);
+        background: rgba(95, 70, 255, 0.04);
+        box-shadow: 0 8px 18px rgba(95, 70, 255, 0.08);
+      }
+
+      .ranking-item.active {
+        background: rgba(95, 70, 255, 0.1);
+        border-color: rgba(95, 70, 255, 0.22);
+      }
+
+      .ranking-main {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .ranking-title {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1;
+      }
+
+      .ranking-metrics {
+        margin-top: 8px;
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 700;
       }
 
       table {
@@ -487,6 +489,10 @@
         max-width: 140px;
       }
 
+      .truncate.card-title {
+        max-width: 100%;
+      }
+
       .primary-row,
       .secondary-row {
         cursor: pointer;
@@ -517,80 +523,114 @@
           #fff;
       }
 
-      .detail-bar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        flex-wrap: wrap;
-        margin-bottom: 14px;
-      }
-
-      .section-tabs {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      .tab-pill {
-        padding: 8px 12px;
-        border-radius: 999px;
-        background: var(--bg-soft);
-        color: var(--muted-strong);
-        font-size: 12px;
-      }
-
-      .tab-pill.active {
-        background: var(--accent-soft);
-        color: var(--accent);
-      }
-
-      .detail-summary {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-bottom: 14px;
-      }
-
-      .detail-box {
-        flex: 0 1 180px;
-        padding: 10px 12px;
-        border-radius: 16px;
-        background: linear-gradient(180deg, rgba(247, 250, 254, 0.95), rgba(240, 245, 251, 0.92));
-        border: 1px solid var(--line);
-      }
-
-      .detail-label {
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .detail-value {
-        margin-top: 6px;
-        font-size: 18px;
-        font-weight: 800;
-        letter-spacing: -0.03em;
-      }
-
       .detail-grid {
-        display: grid;
-        grid-template-columns: minmax(360px, 0.86fr) minmax(0, 1.14fr);
-        gap: 12px;
         min-height: 0;
       }
 
       .detail-pane {
         min-height: 0;
-        display: grid;
-        grid-template-rows: auto 1fr;
-        gap: 10px;
-        height: 320px;
       }
 
       .compact-table th,
       .compact-table td {
         padding: 10px;
         font-size: 12px;
+      }
+
+      .detail-cards {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .detail-card {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px;
+        border-radius: 16px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(246, 249, 253, 0.92));
+        border: 1px solid var(--line);
+        min-width: 0;
+      }
+
+      .detail-card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .detail-card-title {
+        min-width: 0;
+        color: #f24b9a;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .detail-card-total {
+        flex-shrink: 0;
+        color: var(--accent);
+        font-weight: 800;
+        font-size: 12px;
+      }
+
+      .detail-card-meta {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .detail-table-shell {
+        overflow: hidden;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(248, 251, 255, 0.96), rgba(243, 247, 252, 0.86));
+      }
+
+      .detail-table-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(194, 210, 228, 0.55);
+        background: rgba(247, 250, 254, 0.92);
+      }
+
+      .detail-search {
+        width: 240px;
+        max-width: 100%;
+        min-height: 34px;
+        padding: 0 12px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+      }
+
+      .detail-search:focus {
+        outline: none;
+        border-color: rgba(95, 70, 255, 0.38);
+        box-shadow: 0 0 0 3px rgba(95, 70, 255, 0.12);
+      }
+
+      .detail-table-wrap {
+        overflow: auto;
+        max-height: 520px;
+      }
+
+      .expanded-row td {
+        background: rgba(246, 249, 253, 0.92);
+        padding: 14px;
+      }
+
+      .expanded-block {
+        display: grid;
+        gap: 12px;
       }
 
       .pane-title {
@@ -651,6 +691,10 @@
           grid-template-columns: 1fr;
         }
 
+        .detail-cards {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
         .dashboard {
           grid-template-rows: auto auto auto;
         }
@@ -677,6 +721,10 @@
 
         .detail-box {
           flex-basis: 100%;
+        }
+
+        .detail-cards {
+          grid-template-columns: 1fr;
         }
 
         .topbar,
@@ -772,27 +820,15 @@
             <button id="clearBtn" class="toolbar-action danger" type="button">清空</button>
           </div>
         </div>
-
-        <div class="topbar-meta">
-          <div id="viewHint" class="view-hint">
-            当前视图:
-            <strong>设备 -> 主机 -> 目标 IP / 节点链路 / 进程</strong>
-          </div>
-          <div class="status-wrap">
-            <div id="lastUpdated" class="view-hint"><strong>等待加载</strong></div>
-            <div id="status" class="status"></div>
-          </div>
-        </div>
       </section>
 
       <section class="cards">
         <div class="panel card">
           <div class="card-top">
-            <div class="card-label">分组数量</div>
+            <div id="countLabel" class="card-label">设备</div>
             <div class="card-badge count">#</div>
           </div>
           <div id="countValue" class="card-value">0</div>
-          <div class="card-note">当前维度共有 <strong id="groupLabel">0</strong> 个活跃分组</div>
         </div>
         <div class="panel card">
           <div class="card-top">
@@ -800,7 +836,7 @@
             <div class="card-badge up">↑</div>
           </div>
           <div id="uploadValue" class="card-value">0 B</div>
-          <div class="card-note">观察主动请求、同步和上行峰值</div>
+          <div class="card-note"></div>
         </div>
         <div class="panel card">
           <div class="card-top">
@@ -808,7 +844,7 @@
             <div class="card-badge down">↓</div>
           </div>
           <div id="downloadValue" class="card-value">0 B</div>
-          <div class="card-note">观察媒体拉流、文件下载和页面响应</div>
+          <div class="card-note"></div>
         </div>
         <div class="panel card">
           <div class="card-top">
@@ -816,7 +852,7 @@
             <div class="card-badge total">Σ</div>
           </div>
           <div id="totalValue" class="card-value">0 B</div>
-          <div class="card-note">右下区域继续展开当前对象的链路明细</div>
+          <div class="card-note"></div>
         </div>
       </section>
 
@@ -824,41 +860,20 @@
         <section class="panel ranking-panel">
           <div class="panel-head">
             <div>
-              <h2 class="panel-title">热点排行</h2>
-              <div id="primarySubtitle" class="panel-subtitle">
-                当前按设备聚合，点击左侧行后自动加载对应访问主机。
-              </div>
+              <h2 id="primaryTitle" class="panel-title">设备</h2>
             </div>
-            <div class="panel-aside">Top 120</div>
           </div>
 
-          <div class="scroll-wrap">
-            <table class="primary-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th id="labelHeader">标签</th>
-                  <th>上传</th>
-                  <th>下载</th>
-                  <th>总量</th>
-                </tr>
-              </thead>
-              <tbody id="tableBody">
-                <tr>
-                  <td colspan="5" class="empty">加载中...</td>
-                </tr>
-              </tbody>
-            </table>
+          <div id="tableBody" class="ranking-list">
+            <div class="empty">加载中...</div>
           </div>
         </section>
 
         <section class="panel trend-panel">
           <div class="panel-head">
             <div>
-              <h2 class="panel-title">流量趋势</h2>
-              <div class="panel-subtitle">根据时间范围自动调整桶大小，单屏内保持趋势清晰。</div>
+              <h2 class="panel-title">流量</h2>
             </div>
-            <div id="trendMeta" class="panel-aside">总流量折线</div>
           </div>
           <canvas id="trendCanvas"></canvas>
         </section>
@@ -866,44 +881,19 @@
         <section class="panel detail-panel">
           <div class="panel-head">
             <div>
-              <h2 class="panel-title">联动明细</h2>
-              <div id="detailSubtitle" class="panel-subtitle">
-                二级区域展示访问主机，选中后会展开目标 IP、节点链路、设备 IP 和进程明细。
-              </div>
-            </div>
-          </div>
-
-          <div class="detail-bar">
-            <div class="section-tabs">
-              <div id="selectedPrimaryBadge" class="tab-pill">未选择主分组</div>
-              <div id="selectedSecondaryBadge" class="tab-pill">未选择二级对象</div>
-            </div>
-          </div>
-
-          <div class="detail-summary">
-            <div class="detail-box">
-              <div class="detail-label">二级对象数</div>
-              <div id="secondaryCount" class="detail-value">0</div>
-            </div>
-            <div class="detail-box">
-              <div class="detail-label">链路条目数</div>
-              <div id="detailCount" class="detail-value">0</div>
-            </div>
-            <div class="detail-box">
-              <div class="detail-label">明细上传</div>
-              <div id="detailUpload" class="detail-value">0 B</div>
-            </div>
-            <div class="detail-box">
-              <div class="detail-label">明细下载</div>
-              <div id="detailDownload" class="detail-value">0 B</div>
+              <h2 class="panel-title">链路明细</h2>
             </div>
           </div>
 
           <div class="detail-grid">
             <section class="detail-pane">
-              <div class="pane-title" id="secondaryHeaderWrap">二级对象</div>
-              <div class="scroll-wrap">
-                <table class="compact-table secondary-table">
+              <div class="detail-table-shell">
+                <div class="detail-table-head">
+                  <div class="pane-title" id="secondaryHeaderWrap">访问主机列表</div>
+                  <input id="detailSearch" class="detail-search" type="search" placeholder="搜索" />
+                </div>
+                <div class="detail-table-wrap">
+                  <table class="compact-table secondary-table">
                   <thead>
                     <tr>
                       <th>#</th>
@@ -911,41 +901,15 @@
                       <th>上传</th>
                       <th>下载</th>
                       <th>总量</th>
-                      <th>样本</th>
                     </tr>
                   </thead>
                   <tbody id="secondaryBody">
                     <tr>
-                      <td colspan="6" class="empty">选择左侧分组后加载</td>
+                      <td colspan="5" class="empty">选择左侧分组后加载</td>
                     </tr>
                   </tbody>
-                </table>
-              </div>
-            </section>
-
-            <section class="detail-pane">
-              <div class="pane-title">链路明细</div>
-              <div class="scroll-wrap">
-                <table class="compact-table detail-table">
-                  <thead>
-                    <tr>
-                      <th>目标 IP</th>
-                      <th>节点链路</th>
-                      <th>设备 IP</th>
-                      <th>进程</th>
-                      <th>出口</th>
-                      <th>上传</th>
-                      <th>下载</th>
-                      <th>总量</th>
-                      <th>样本</th>
-                    </tr>
-                  </thead>
-                  <tbody id="detailBody">
-                    <tr>
-                      <td colspan="9" class="detail-empty">选择二级对象后加载链路明细</td>
-                    </tr>
-                  </tbody>
-                </table>
+                  </table>
+                </div>
               </div>
             </section>
           </div>
@@ -956,22 +920,13 @@
     <script>
       const drilldownConfig = {
         sourceIP: {
-          tabLabel: "设备",
-          primaryLabel: "设备",
           secondaryLabel: "访问主机",
-          viewHint: "设备 -> 主机 -> 目标 IP / 节点链路 / 进程",
         },
         host: {
-          tabLabel: "主机",
-          primaryLabel: "目标主机",
           secondaryLabel: "访问设备",
-          viewHint: "主机 -> 设备 -> 目标 IP / 节点链路 / 进程",
         },
         outbound: {
-          tabLabel: "代理",
-          primaryLabel: "代理",
           secondaryLabel: "目标主机",
-          viewHint: "代理 -> 主机 -> 目标 IP / 设备 / 进程",
         },
       }
 
@@ -983,30 +938,18 @@
         end: document.getElementById("end"),
         refreshBtn: document.getElementById("refreshBtn"),
         clearBtn: document.getElementById("clearBtn"),
-        status: document.getElementById("status"),
+        countLabel: document.getElementById("countLabel"),
+        primaryTitle: document.getElementById("primaryTitle"),
         countValue: document.getElementById("countValue"),
         uploadValue: document.getElementById("uploadValue"),
         downloadValue: document.getElementById("downloadValue"),
         totalValue: document.getElementById("totalValue"),
-        groupLabel: document.getElementById("groupLabel"),
-        labelHeader: document.getElementById("labelHeader"),
         tableBody: document.getElementById("tableBody"),
         trendCanvas: document.getElementById("trendCanvas"),
-        trendMeta: document.getElementById("trendMeta"),
-        primarySubtitle: document.getElementById("primarySubtitle"),
-        detailSubtitle: document.getElementById("detailSubtitle"),
         secondaryHeader: document.getElementById("secondaryHeader"),
         secondaryHeaderWrap: document.getElementById("secondaryHeaderWrap"),
+        detailSearch: document.getElementById("detailSearch"),
         secondaryBody: document.getElementById("secondaryBody"),
-        detailBody: document.getElementById("detailBody"),
-        secondaryCount: document.getElementById("secondaryCount"),
-        detailCount: document.getElementById("detailCount"),
-        detailUpload: document.getElementById("detailUpload"),
-        detailDownload: document.getElementById("detailDownload"),
-        selectedPrimaryBadge: document.getElementById("selectedPrimaryBadge"),
-        selectedSecondaryBadge: document.getElementById("selectedSecondaryBadge"),
-        viewHint: document.getElementById("viewHint"),
-        lastUpdated: document.getElementById("lastUpdated"),
       }
 
       const state = {
@@ -1016,6 +959,7 @@
         detailRows: [],
         selectedPrimary: null,
         selectedSecondary: null,
+        detailSearchQuery: "",
         loadSeq: 0,
         detailSeq: 0,
       }
@@ -1086,8 +1030,8 @@
       }
 
       function setStatus(text, isError = false) {
-        elements.status.textContent = text
-        elements.status.className = isError ? "status error" : "status"
+        void text
+        void isError
       }
 
       async function fetchJSON(path, params) {
@@ -1114,12 +1058,20 @@
 
       function updateViewHints() {
         const config = drilldownConfig[elements.dimension.value]
-        elements.labelHeader.textContent = config.primaryLabel
+        const countLabelMap = {
+          sourceIP: "设备",
+          host: "主机",
+          outbound: "代理",
+        }
+        const rankingTitleMap = {
+          sourceIP: "设备",
+          host: "主机",
+          outbound: "代理",
+        }
+        elements.countLabel.textContent = countLabelMap[elements.dimension.value] || "设备"
+        elements.primaryTitle.textContent = rankingTitleMap[elements.dimension.value] || "设备"
         elements.secondaryHeader.textContent = config.secondaryLabel
         elements.secondaryHeaderWrap.textContent = `${config.secondaryLabel}列表`
-        elements.viewHint.innerHTML = `当前视图: <strong>${config.viewHint}</strong>`
-        elements.primarySubtitle.textContent = `当前按${config.primaryLabel}聚合，点击左侧行后自动加载对应${config.secondaryLabel}。`
-        elements.detailSubtitle.textContent = `右下区域展示${config.secondaryLabel}与链路明细，保持单屏联动。`
         syncDimensionTabs()
       }
 
@@ -1127,7 +1079,6 @@
         const upload = rows.reduce((sum, row) => sum + row.upload, 0)
         const download = rows.reduce((sum, row) => sum + row.download, 0)
         elements.countValue.textContent = String(rows.length)
-        elements.groupLabel.textContent = String(rows.length)
         elements.uploadValue.textContent = formatBytes(upload)
         elements.downloadValue.textContent = formatBytes(download)
         elements.totalValue.textContent = formatBytes(upload + download)
@@ -1135,7 +1086,7 @@
 
       function renderPrimaryTable(rows) {
         if (!rows.length) {
-          elements.tableBody.innerHTML = '<tr><td colspan="5" class="empty">当前时间范围内没有数据</td></tr>'
+          elements.tableBody.innerHTML = '<div class="empty">当前时间范围内没有数据</div>'
           return
         }
 
@@ -1144,30 +1095,80 @@
           .map((row, index) => {
             const active = state.selectedPrimary === row.label ? " active" : ""
             return `
-              <tr class="primary-row${active}" tabindex="0" data-primary="${escapeHTML(row.label)}">
-                <td><span class="rank">${index + 1}</span></td>
-                <td><div class="mono">${renderTruncatedText(row.label, "label", "-")}</div></td>
-                <td>${formatBytes(row.upload)}</td>
-                <td>${formatBytes(row.download)}</td>
-                <td class="mono">${formatBytes(row.total)}</td>
-              </tr>
+              <div class="ranking-item primary-row${active}" tabindex="0" data-primary="${escapeHTML(row.label)}">
+                <div class="ranking-main">
+                  <div class="ranking-title">
+                    <span class="rank">${index + 1}</span>
+                    <div class="mono">${renderTruncatedText(row.label, "host", "-")}</div>
+                  </div>
+                  <div class="mono" style="font-weight:800; color:${state.selectedPrimary === row.label ? "var(--accent)" : "var(--text)"}">${formatBytes(row.total)}</div>
+                </div>
+                <div class="ranking-metrics">
+                  <span>↑ ${formatBytes(row.upload)}</span>
+                  <span>↓ ${formatBytes(row.download)}</span>
+                </div>
+              </div>
             `
           })
           .join("")
       }
 
       function renderSecondaryTable(rows) {
-        elements.secondaryCount.textContent = String(rows.length)
+        const filteredRows = rows.filter((row) =>
+          row.label.toLowerCase().includes(state.detailSearchQuery.toLowerCase()),
+        )
 
-        if (!rows.length) {
-          elements.secondaryBody.innerHTML = '<tr><td colspan="6" class="empty">当前主分组下没有可展开的二级对象</td></tr>'
+        if (!filteredRows.length) {
+          elements.secondaryBody.innerHTML = '<tr><td colspan="5" class="empty">暂无数据</td></tr>'
           return
         }
 
-        elements.secondaryBody.innerHTML = rows
+        const detailCards = !state.detailRows.length
+          ? '<div class="detail-empty">暂无链路明细</div>'
+          : state.detailRows
+              .slice(0, 120)
+              .map((row) => {
+                const chips = (row.chains || [])
+                  .map((item) => `<span class="chip route">${escapeHTML(item)}</span>`)
+                  .join("")
+
+                return `
+                  <article class="detail-card">
+                    <div class="detail-card-head">
+                      <div class="detail-card-title mono">
+                        ${renderTruncatedText(row.destinationIP || row.outbound || "Unknown", "card-title")}
+                      </div>
+                      <div class="detail-card-total">${formatBytes(row.total)}</div>
+                    </div>
+                    <div class="detail-card-meta">
+                      <span title="${escapeHTML(row.sourceIP || "Inner")}">${escapeHTML(row.sourceIP || "Inner")}</span>
+                      <span title="${escapeHTML(row.outbound || "DIRECT")}">${escapeHTML(row.outbound || "DIRECT")}</span>
+                    </div>
+                    <div class="detail-card-meta">
+                      <span>↑ ${formatBytes(row.upload)}</span>
+                      <span>↓ ${formatBytes(row.download)}</span>
+                    </div>
+                    <div class="chips">${chips || '<span class="chip route">DIRECT</span>'}</div>
+                  </article>
+                `
+              })
+              .join("")
+
+        elements.secondaryBody.innerHTML = filteredRows
           .slice(0, 120)
           .map((row, index) => {
             const active = state.selectedSecondary === row.label ? " active" : ""
+            const expanded = state.selectedSecondary === row.label
+              ? `
+                <tr class="expanded-row">
+                  <td colspan="5">
+                    <div class="expanded-block">
+                      <div class="detail-cards">${detailCards}</div>
+                    </div>
+                  </td>
+                </tr>
+              `
+              : ""
             return `
               <tr class="secondary-row${active}" tabindex="0" data-secondary="${escapeHTML(row.label)}">
                 <td><span class="rank">${index + 1}</span></td>
@@ -1175,47 +1176,15 @@
                 <td>${formatBytes(row.upload)}</td>
                 <td>${formatBytes(row.download)}</td>
                 <td class="mono">${formatBytes(row.total)}</td>
-                <td>${row.count}</td>
               </tr>
+              ${expanded}
             `
           })
           .join("")
       }
 
       function renderDetails(rows) {
-        const upload = rows.reduce((sum, row) => sum + row.upload, 0)
-        const download = rows.reduce((sum, row) => sum + row.download, 0)
-        elements.detailCount.textContent = String(rows.length)
-        elements.detailUpload.textContent = formatBytes(upload)
-        elements.detailDownload.textContent = formatBytes(download)
-
-        if (!rows.length) {
-          elements.detailBody.innerHTML = '<tr><td colspan="9" class="detail-empty">当前二级对象下没有链路明细</td></tr>'
-          return
-        }
-
-        elements.detailBody.innerHTML = rows
-          .slice(0, 160)
-          .map((row) => {
-            const chips = (row.chains || [])
-              .map((item) => `<span class="chip route">${escapeHTML(item)}</span>`)
-              .join("")
-
-            return `
-              <tr>
-                <td class="mono">${renderTruncatedText(row.destinationIP, "ip")}</td>
-                <td><div class="chips">${chips || '<span class="chip route">DIRECT</span>'}</div></td>
-                <td class="mono">${renderTruncatedText(row.sourceIP, "ip", "Inner")}</td>
-                <td>${renderTruncatedText(row.process, "proc")}</td>
-                <td><span class="chip" title="${escapeHTML(row.outbound || "DIRECT")}">${renderTruncatedText(row.outbound, "outbound", "DIRECT")}</span></td>
-                <td>${formatBytes(row.upload)}</td>
-                <td>${formatBytes(row.download)}</td>
-                <td class="mono">${formatBytes(row.total)}</td>
-                <td>${row.count}</td>
-              </tr>
-            `
-          })
-          .join("")
+        void rows
       }
 
       function renderTrend(points) {
@@ -1308,14 +1277,9 @@
         state.selectedSecondary = rows[0]?.label || null
         renderSecondaryTable(rows)
 
-        elements.selectedPrimaryBadge.textContent = `${drilldownConfig[dimension].primaryLabel}: ${primaryLabel}`
-        elements.selectedPrimaryBadge.classList.add("active")
-
         if (state.selectedSecondary) {
           await loadDetails(primaryLabel, state.selectedSecondary)
         } else {
-          elements.selectedSecondaryBadge.textContent = `未选择${drilldownConfig[dimension].secondaryLabel}`
-          elements.selectedSecondaryBadge.classList.remove("active")
           renderDetails([])
         }
       }
@@ -1323,9 +1287,6 @@
       async function loadDetails(primaryLabel, secondaryLabel) {
         const { start, end } = getTimeRange()
         const seq = ++state.detailSeq
-
-        elements.selectedSecondaryBadge.textContent = `${drilldownConfig[elements.dimension.value].secondaryLabel}: ${secondaryLabel}`
-        elements.selectedSecondaryBadge.classList.add("active")
 
         const rows = await fetchJSON("/api/traffic/details", {
           dimension: elements.dimension.value,
@@ -1347,14 +1308,8 @@
         state.selectedSecondary = null
         state.secondaryRows = []
         state.detailRows = []
-        elements.selectedPrimaryBadge.textContent = "未选择主分组"
-        elements.selectedPrimaryBadge.classList.remove("active")
-        elements.selectedSecondaryBadge.textContent = "未选择二级对象"
-        elements.selectedSecondaryBadge.classList.remove("active")
-        elements.secondaryCount.textContent = "0"
-        elements.detailCount.textContent = "0"
-        elements.detailUpload.textContent = "0 B"
-        elements.detailDownload.textContent = "0 B"
+        state.detailSearchQuery = ""
+        if (elements.detailSearch) elements.detailSearch.value = ""
         renderSecondaryTable([])
         renderDetails([])
       }
@@ -1395,15 +1350,13 @@
           renderCards(rows)
           renderPrimaryTable(rows)
           renderTrend(trend)
-          elements.lastUpdated.innerHTML = `<strong>最近刷新 ${new Date().toLocaleString()}</strong>`
-          elements.trendMeta.textContent = `共 ${trend.length} 个时间桶`
 
           if (state.selectedPrimary) {
             await loadSecondaryRows(state.selectedPrimary)
             renderPrimaryTable(state.primaryRows)
           }
 
-          setStatus(`已加载 ${new Date().toLocaleTimeString()}`)
+          setStatus("")
         } catch (error) {
           console.error(error)
           setStatus(error.message || "加载失败", true)
@@ -1449,6 +1402,10 @@
 
       elements.refreshBtn.addEventListener("click", loadData)
       elements.clearBtn.addEventListener("click", clearLogs)
+      elements.detailSearch.addEventListener("input", (event) => {
+        state.detailSearchQuery = event.target.value || ""
+        renderSecondaryTable(state.secondaryRows)
+      })
 
       elements.tableBody.addEventListener("click", async (event) => {
         const row = event.target.closest("[data-primary]")
