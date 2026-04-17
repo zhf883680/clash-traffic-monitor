@@ -57,6 +57,8 @@ const elements = {
   totalValue: document.getElementById("totalValue"),
   tableBody: document.getElementById("tableBody"),
   trendCanvas: document.getElementById("trendCanvas"),
+  trendTooltip: document.getElementById("trendTooltip"),
+  trendAxis: document.getElementById("trendAxis"),
   secondaryTitle: document.getElementById("secondaryTitle"),
   secondaryHeader: document.getElementById("secondaryHeader"),
   detailTitle: document.getElementById("detailTitle"),
@@ -67,6 +69,8 @@ const elements = {
 
 const state = {
   lastTrendPoints: [],
+  trendPlotPoints: [],
+  trendHoverIndex: -1,
   primaryRows: [],
   secondaryRows: [],
   detailRows: [],
@@ -94,6 +98,48 @@ function formatDateTime(timestamp) {
   const date = new Date(timestamp)
   const pad = (value) => String(value).padStart(2, "0")
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function formatTrendAxisTick(timestamp, spanMs) {
+  if (!Number.isFinite(timestamp)) return "--"
+  const date = new Date(timestamp)
+  const pad = (value) => String(value).padStart(2, "0")
+  const monthDay = `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  const hourMinute = `${pad(date.getHours())}:${pad(date.getMinutes())}`
+
+  if (spanMs <= 86400000) return hourMinute
+  if (spanMs <= 604800000) return `${monthDay} ${hourMinute}`
+  return monthDay
+}
+
+function getTrendTickIndexes(pointCount, targetCount = 5) {
+  if (pointCount <= 0) return []
+  if (pointCount === 1) return [0]
+
+  const ticks = Math.min(pointCount, targetCount)
+  return Array.from(
+    new Set(
+      Array.from({ length: ticks }, (_, index) =>
+        Math.round(((pointCount - 1) * index) / Math.max(ticks - 1, 1)),
+      ),
+    ),
+  )
+}
+
+function updateTrendAxisLabels(points) {
+  if (!points.length) {
+    elements.trendAxis.innerHTML = '<span>--</span><span>--</span><span>--</span><span>--</span><span>--</span>'
+    return
+  }
+
+  const startPoint = points[0]
+  const endPoint = points[points.length - 1]
+  const spanMs = Math.max(endPoint.timestamp - startPoint.timestamp, 0)
+  const tickMarkup = getTrendTickIndexes(points.length)
+    .map((index) => `<span>${escapeHTML(formatTrendAxisTick(points[index].timestamp, spanMs))}</span>`)
+    .join("")
+
+  elements.trendAxis.innerHTML = tickMarkup
 }
 
 function updateCustomInputs() {
@@ -445,6 +491,83 @@ function renderDetails(rows) {
   elements.detailCards.innerHTML = `<div class="detail-card-grid">${cards}</div>`
 }
 
+function hideTrendTooltip() {
+  elements.trendTooltip.classList.add("hidden")
+  elements.trendTooltip.setAttribute("aria-hidden", "true")
+  elements.trendTooltip.innerHTML = ""
+
+  if (state.trendHoverIndex === -1 || !state.lastTrendPoints.length) return
+
+  state.trendHoverIndex = -1
+  renderTrend(state.lastTrendPoints)
+}
+
+function showTrendTooltip(event) {
+  if (!state.trendPlotPoints.length) return
+
+  const rect = elements.trendCanvas.getBoundingClientRect()
+  const pointerX = event.clientX - rect.left
+  let nearestIndex = 0
+  let nearestDistance = Number.POSITIVE_INFINITY
+
+  state.trendPlotPoints.forEach((plotPoint, index) => {
+    const distance = Math.abs(plotPoint.x - pointerX)
+    if (distance < nearestDistance) {
+      nearestDistance = distance
+      nearestIndex = index
+    }
+  })
+
+  if (nearestIndex !== state.trendHoverIndex) {
+    state.trendHoverIndex = nearestIndex
+    renderTrend(state.lastTrendPoints)
+  }
+
+  const activePoint = state.trendPlotPoints[nearestIndex]
+  const total = activePoint.point.upload + activePoint.point.download
+  elements.trendTooltip.innerHTML = `
+    <div class="trend-tooltip-time">${escapeHTML(formatDateTime(activePoint.point.timestamp))}</div>
+    <div class="trend-tooltip-metric total"><span>总流量</span><strong>${formatBytes(total)}</strong></div>
+    <div class="trend-tooltip-metric upload"><span>上传</span><strong>${formatBytes(activePoint.point.upload)}</strong></div>
+    <div class="trend-tooltip-metric download"><span>下载</span><strong>${formatBytes(activePoint.point.download)}</strong></div>
+  `
+  elements.trendTooltip.classList.remove("hidden")
+  elements.trendTooltip.setAttribute("aria-hidden", "false")
+
+  const tooltipWidth = elements.trendTooltip.offsetWidth
+  const tooltipHeight = elements.trendTooltip.offsetHeight
+  const anchorX = rect.left + activePoint.x
+  const anchorY = rect.top + activePoint.totalY
+  let left = anchorX + 14
+  let top = anchorY - tooltipHeight - 14
+
+  if (left + tooltipWidth > window.innerWidth - 12) {
+    left = window.innerWidth - tooltipWidth - 12
+  }
+  if (left < 12) {
+    left = 12
+  }
+  if (top < 12) {
+    top = Math.min(anchorY + 18, window.innerHeight - tooltipHeight - 12)
+  }
+
+  elements.trendTooltip.style.left = `${left}px`
+  elements.trendTooltip.style.top = `${top}px`
+}
+
+function drawTrendSeries(ctx, points, color, lineWidth) {
+  if (!points.length) return
+
+  ctx.beginPath()
+  points.forEach(([x, y], index) => {
+    if (index === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  })
+  ctx.strokeStyle = color
+  ctx.lineWidth = lineWidth
+  ctx.stroke()
+}
+
 function renderTrend(points) {
   state.lastTrendPoints = points
   const canvas = elements.trendCanvas
@@ -459,12 +582,14 @@ function renderTrend(points) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, width, height)
 
+  updateTrendAxisLabels(points)
+
   const values = points.map((point) => point.upload + point.download)
   const max = Math.max(...values, 1)
   const left = 56
   const right = width - 18
   const top = 18
-  const bottom = height - 28
+  const bottom = height - 18
 
   ctx.strokeStyle = "rgba(167, 181, 198, 0.45)"
   ctx.lineWidth = 1
@@ -481,32 +606,90 @@ function renderTrend(points) {
   ctx.fillText(formatBytes(max), 8, top + 4)
   ctx.fillText("0 B", 18, bottom)
 
-  if (!points.length) return
+  state.trendPlotPoints = []
+  if (!points.length) {
+    state.trendHoverIndex = -1
+    elements.trendTooltip.classList.add("hidden")
+    elements.trendTooltip.setAttribute("aria-hidden", "true")
+    elements.trendTooltip.innerHTML = ""
+    return
+  }
 
-  const linePoints = points.map((point, index) => {
+  const tickIndexes = getTrendTickIndexes(points.length)
+  ctx.save()
+  ctx.setLineDash([4, 6])
+  ctx.strokeStyle = "rgba(167, 181, 198, 0.28)"
+  tickIndexes.forEach((index) => {
     const x = left + ((right - left) * index) / Math.max(points.length - 1, 1)
-    const y = bottom - ((bottom - top) * (point.upload + point.download)) / max
-    return [x, y]
+    ctx.beginPath()
+    ctx.moveTo(x, top)
+    ctx.lineTo(x, bottom)
+    ctx.stroke()
   })
+  ctx.restore()
+
+  const totalLinePoints = points.map((point, index) => {
+    const x = left + ((right - left) * index) / Math.max(points.length - 1, 1)
+    const totalY = bottom - ((bottom - top) * (point.upload + point.download)) / max
+    const uploadY = bottom - ((bottom - top) * point.upload) / max
+    const downloadY = bottom - ((bottom - top) * point.download) / max
+    state.trendPlotPoints.push({
+      x,
+      totalY,
+      uploadY,
+      downloadY,
+      point,
+    })
+    return [x, totalY]
+  })
+  const uploadLinePoints = state.trendPlotPoints.map(({ x, uploadY }) => [x, uploadY])
+  const downloadLinePoints = state.trendPlotPoints.map(({ x, downloadY }) => [x, downloadY])
 
   const areaGradient = ctx.createLinearGradient(0, top, 0, bottom)
-  areaGradient.addColorStop(0, "rgba(61, 184, 255, 0.26)")
-  areaGradient.addColorStop(1, "rgba(61, 184, 255, 0.02)")
+  areaGradient.addColorStop(0, "rgba(95, 70, 255, 0.18)")
+  areaGradient.addColorStop(1, "rgba(95, 70, 255, 0.02)")
 
   ctx.beginPath()
-  linePoints.forEach(([x, y], index) => {
+  totalLinePoints.forEach(([x, y], index) => {
     if (index === 0) ctx.moveTo(x, y)
     else ctx.lineTo(x, y)
   })
-  ctx.strokeStyle = "#3db8ff"
-  ctx.lineWidth = 2.5
-  ctx.stroke()
-
   ctx.lineTo(right, bottom)
   ctx.lineTo(left, bottom)
   ctx.closePath()
   ctx.fillStyle = areaGradient
   ctx.fill()
+
+  drawTrendSeries(ctx, totalLinePoints, "#5f46ff", 2.5)
+  drawTrendSeries(ctx, uploadLinePoints, "#3db8ff", 2)
+  drawTrendSeries(ctx, downloadLinePoints, "#31d184", 2)
+
+  if (state.trendHoverIndex >= 0 && state.trendHoverIndex < state.trendPlotPoints.length) {
+    const activePoint = state.trendPlotPoints[state.trendHoverIndex]
+    ctx.save()
+    ctx.setLineDash([4, 4])
+    ctx.strokeStyle = "rgba(95, 70, 255, 0.42)"
+    ctx.beginPath()
+    ctx.moveTo(activePoint.x, top)
+    ctx.lineTo(activePoint.x, bottom)
+    ctx.stroke()
+    ctx.restore()
+
+    ;[
+      { y: activePoint.totalY, color: "#5f46ff" },
+      { y: activePoint.uploadY, color: "#3db8ff" },
+      { y: activePoint.downloadY, color: "#31d184" },
+    ].forEach(({ y, color }) => {
+      ctx.beginPath()
+      ctx.arc(activePoint.x, y, 4, 0, Math.PI * 2)
+      ctx.fillStyle = "#fff"
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(activePoint.x, y, 2.5, 0, Math.PI * 2)
+      ctx.fillStyle = color
+      ctx.fill()
+    })
+  }
 }
 
 async function loadSecondaryRows(primaryLabel) {
@@ -695,6 +878,8 @@ elements.detailSearch.addEventListener("input", (event) => {
   state.detailSearchQuery = event.target.value || ""
   renderSecondaryTable(state.secondaryRows)
 })
+elements.trendCanvas.addEventListener("mousemove", showTrendTooltip)
+elements.trendCanvas.addEventListener("mouseleave", hideTrendTooltip)
 
 elements.tableBody.addEventListener("click", async (event) => {
   const row = event.target.closest("[data-primary]")
@@ -745,6 +930,8 @@ elements.secondaryBody.addEventListener("keydown", (event) => {
 })
 
 window.addEventListener("resize", () => {
+  elements.trendTooltip.classList.add("hidden")
+  state.trendHoverIndex = -1
   renderTrend(state.lastTrendPoints)
 })
 

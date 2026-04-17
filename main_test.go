@@ -782,6 +782,82 @@ func TestEmbeddedIndexIncludesGithubAndLicenseFooter(t *testing.T) {
 	}
 }
 
+func TestEmbeddedTrendChartIncludesAxisAndTooltip(t *testing.T) {
+	indexContent, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+
+	html := string(indexContent)
+	for _, unwanted := range []string{
+		`class="trend-legend"`,
+		`class="trend-legend-item total"`,
+		`class="trend-legend-item upload"`,
+		`class="trend-legend-item download"`,
+	} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("expected embedded index.html to remove %q", unwanted)
+		}
+	}
+
+	for _, want := range []string{
+		`id="trendTooltip"`,
+		`id="trendAxis"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected embedded index.html to contain %q", want)
+		}
+	}
+	if strings.Contains(html, `class="trend-axis-caption"`) {
+		t.Fatalf("expected embedded index.html to remove the trend axis caption")
+	}
+
+	scriptContent, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app.js: %v", err)
+	}
+
+	script := string(scriptContent)
+	for _, want := range []string{
+		`trendTooltip: document.getElementById("trendTooltip")`,
+		`trendAxis: document.getElementById("trendAxis")`,
+		"function formatTrendAxisTick(",
+		"function getTrendTickIndexes(",
+		"function updateTrendAxisLabels(points) {",
+		"function showTrendTooltip(event) {",
+		"function hideTrendTooltip() {",
+		"elements.trendAxis.innerHTML =",
+		"updateTrendAxisLabels(points)",
+		`elements.trendCanvas.addEventListener("mousemove", showTrendTooltip)`,
+		`elements.trendCanvas.addEventListener("mouseleave", hideTrendTooltip)`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected embedded app.js to contain %q", want)
+		}
+	}
+
+	styleContent, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatalf("read embedded styles.css: %v", err)
+	}
+
+	styles := string(styleContent)
+	for _, want := range []string{
+		".trend-chart-shell",
+		"grid-template-rows: minmax(0, 1fr) auto;",
+		".trend-tooltip",
+		"position: fixed;",
+		".trend-tooltip-time",
+		".trend-tooltip-metric",
+		".trend-axis",
+		".trend-axis span",
+	} {
+		if !strings.Contains(styles, want) {
+			t.Fatalf("expected embedded styles.css to contain %q", want)
+		}
+	}
+}
+
 func TestEmbeddedAppScriptIncludesContextualDashboardLabels(t *testing.T) {
 	content, err := webAssets.ReadFile("web/app.js")
 	if err != nil {
@@ -818,6 +894,7 @@ func TestEmbeddedStylesConstrainDashboardHeight(t *testing.T) {
 	styles := string(content)
 	for _, want := range []string{
 		"--overview-panel-height:",
+		"clamp(228px, 29vh, 244px);",
 		"height: var(--overview-panel-height);",
 		"grid-template-areas:",
 		`"count total"`,

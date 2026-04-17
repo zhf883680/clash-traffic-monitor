@@ -136,12 +136,15 @@
       <div id="dashboardShell" class="dashboard-shell">
         <section id="overviewSection" class="overview-grid" data-region="overview">
           <section class="panel trend-panel">
-            <div class="panel-head">
+            <div class="panel-head trend-panel-head">
               <div>
                 <h2 class="panel-title">流量走势</h2>
               </div>
             </div>
-            <canvas id="trendCanvas"></canvas>
+            <div class="trend-chart-shell">
+              <canvas id="trendCanvas" aria-label="流量趋势图"></canvas>
+              <div id="trendAxis" class="trend-axis" aria-hidden="true"></div>
+            </div>
           </section>
 
           <section class="cards">
@@ -250,6 +253,7 @@
       </div>
     </div>
 
+    <div id="trendTooltip" class="trend-tooltip hidden" aria-hidden="true"></div>
     <script src="/app.js"></script>
   </body>
 </html>

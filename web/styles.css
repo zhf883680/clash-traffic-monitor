@@ -19,7 +19,7 @@
   --radius-xl: 26px;
   --radius-lg: 20px;
   --radius-md: 16px;
-  --overview-panel-height: clamp(216px, 28vh, 230px);
+  --overview-panel-height: clamp(228px, 29vh, 244px);
 }
 
 * {
@@ -542,6 +542,7 @@ select {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   height: var(--overview-panel-height);
+  padding: 14px 16px 12px;
 }
 
 .secondary-panel {
@@ -612,6 +613,10 @@ select {
   align-items: flex-start;
   gap: 14px;
   margin-bottom: 14px;
+}
+
+.trend-panel-head {
+  margin-bottom: 6px;
 }
 
 .panel-head > div {
@@ -841,11 +846,99 @@ th {
   height: 100%;
   min-height: 0;
   display: block;
+  cursor: crosshair;
   border-radius: 18px;
   border: 1px solid var(--line);
   background:
     linear-gradient(180deg, rgba(245, 250, 255, 0.96), rgba(239, 245, 251, 0.88)),
     #fff;
+}
+
+.trend-chart-shell {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 6px;
+  min-height: 0;
+}
+
+.trend-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  min-width: 156px;
+  max-width: 220px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(23, 31, 44, 0.94);
+  color: #fff;
+  box-shadow: 0 18px 32px rgba(14, 19, 29, 0.24);
+  pointer-events: none;
+}
+
+.trend-tooltip-time {
+  margin-bottom: 8px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.trend-tooltip-metric {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.trend-tooltip-metric + .trend-tooltip-metric {
+  margin-top: 6px;
+}
+
+.trend-tooltip-metric span {
+  color: rgba(255, 255, 255, 0.76);
+}
+
+.trend-tooltip-metric strong {
+  color: #fff;
+}
+
+.trend-tooltip-metric.total strong {
+  color: #b8adff;
+}
+
+.trend-tooltip-metric.upload strong {
+  color: #8fd8ff;
+}
+
+.trend-tooltip-metric.download strong {
+  color: #88ebb2;
+}
+
+.trend-axis {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.trend-axis span {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-axis span:first-child {
+  text-align: left;
+}
+
+.trend-axis span:last-child {
+  text-align: right;
 }
 
 .compact-table th,
