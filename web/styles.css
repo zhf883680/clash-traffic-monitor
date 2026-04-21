@@ -20,6 +20,8 @@
   --radius-lg: 20px;
   --radius-md: 16px;
   --overview-panel-height: clamp(228px, 29vh, 244px);
+  --dashboard-columns: minmax(280px, 0.82fr) minmax(0, 1fr) minmax(0, 1.08fr);
+  --dashboard-gap: 14px;
 }
 
 * {
@@ -422,13 +424,13 @@ select {
 
 .dashboard-shell {
   display: grid;
-  gap: 14px;
+  gap: var(--dashboard-gap);
 }
 
 .overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
-  gap: 14px;
+  grid-template-columns: var(--dashboard-columns);
+  gap: var(--dashboard-gap);
   align-items: stretch;
 }
 
@@ -441,6 +443,7 @@ select {
     "upload download";
   gap: 14px;
   height: var(--overview-panel-height);
+  grid-column: 3;
 }
 
 .card {
@@ -520,8 +523,8 @@ select {
 
 .dashboard {
   display: grid;
-  grid-template-columns: minmax(280px, 0.82fr) minmax(0, 1fr) minmax(0, 1.08fr);
-  gap: 14px;
+  grid-template-columns: var(--dashboard-columns);
+  gap: var(--dashboard-gap);
 }
 
 .ranking-panel,
@@ -543,6 +546,7 @@ select {
   grid-template-rows: auto minmax(0, 1fr);
   height: var(--overview-panel-height);
   padding: 14px 16px 12px;
+  grid-column: 1 / span 2;
 }
 
 .secondary-panel {
@@ -1089,6 +1093,11 @@ th {
   .cards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     height: auto;
+    grid-column: auto;
+  }
+
+  .trend-panel {
+    grid-column: auto;
   }
 
   .detail-card-grid {

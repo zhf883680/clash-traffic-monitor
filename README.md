@@ -1,25 +1,74 @@
-<p align="center">
-  <a href="https://github.com/zhf883680/clash-traffic-monitor/stargazers"><img src="https://img.shields.io/github/stars/zhf883680/clash-traffic-monitor?style=flat-square&color=yellow" alt="Stars"></a>
-  <a href="https://hub.docker.com/r/zhf883680/clash-traffic-monitor"><img src="https://img.shields.io/docker/pulls/zhf883680/clash-traffic-monitor?style=flat-square&color=2496ED&logo=docker" alt="Docker Pulls"></a>
-  <a href="https://hub.docker.com/r/zhf883680/clash-traffic-monitor"><img src="https://img.shields.io/docker/v/zhf883680/clash-traffic-monitor?style=flat-square&label=Docker&color=2496ED" alt="Docker Version"></a>
-  <a href="https://hub.docker.com/r/zhf883680/clash-traffic-monitor"><img src="https://img.shields.io/docker/image-size/zhf883680/clash-traffic-monitor/latest?style=flat-square&logo=docker" alt="Image Size"></a>
-  <img src="https://img.shields.io/badge/Go-1.21-00ADD8?style=flat-square&logo=go" alt="Go 1.21">
-  <img src="https://img.shields.io/badge/SQLite-embedded-003B57?style=flat-square&logo=sqlite" alt="SQLite embedded">
-  <img src="https://img.shields.io/badge/OpenWrt-friendly-00B5E2?style=flat-square" alt="OpenWrt Friendly">
-</p>
-
 # Traffic Monitor
 
 `Traffic Monitor` 是一个独立运行的 Clash 流量监控服务。
 
-它会定时读取  Clash 的 `/connections` 数据，把流量增量先聚合到内存，再按分钟桶批量写入 SQLite，并提供一个内置 Web 页面，用来查看设备、主机、代理维度的流量统计和链路明细。
+它会定时读取 Clash 的 `/connections` 数据，把流量增量先聚合到内存，再按分钟桶批量写入 SQLite，并提供一个内置 Web 页面，用来查看设备、域名、IP、代理维度的流量统计和链路明细。
+
+<p align="center">
+  轻量、直接、适合单机和 OpenWrt 场景的 Clash / Mihomo 流量监控服务
+</p>
+
+<p align="center">
+  <a href="https://github.com/zhf883680/clash-traffic-monitor/stargazers">
+    <img src="https://img.shields.io/github/stars/zhf883680/clash-traffic-monitor?style=flat-square&color=yellow" alt="Stars" />
+  </a>
+  <a href="https://hub.docker.com/r/zhf883680/clash-traffic-monitor">
+    <img src="https://img.shields.io/docker/pulls/zhf883680/clash-traffic-monitor?style=flat-square&color=2496ED&logo=docker" alt="Docker Pulls" />
+  </a>
+  <a href="https://hub.docker.com/r/zhf883680/clash-traffic-monitor">
+    <img src="https://img.shields.io/docker/v/zhf883680/clash-traffic-monitor?style=flat-square&label=Docker&color=2496ED" alt="Docker Version" />
+  </a>
+  <a href="https://hub.docker.com/r/zhf883680/clash-traffic-monitor">
+    <img src="https://img.shields.io/docker/image-size/zhf883680/clash-traffic-monitor/latest?style=flat-square&logo=docker" alt="Image Size" />
+  </a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.21-00ADD8?style=flat-square&logo=go" alt="Go 1.21" />
+  <img src="https://img.shields.io/badge/SQLite-embedded-003B57?style=flat-square&logo=sqlite" alt="SQLite embedded" />
+  <img src="https://img.shields.io/badge/OpenWrt-friendly-00B5E2?style=flat-square" alt="OpenWrt Friendly" />
+</p>
+
+<p align="center">
+  <a href="#页面预览">页面预览</a> ·
+  <a href="#功能特性">功能特性</a> ·
+  <a href="#项目现状">项目现状</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#常用配置">常用配置</a> ·
+  <a href="#项目定位">项目定位</a>
+</p>
+
 ## 页面预览
 
 ![Traffic Monitor 页面预览](./readmeImg/image.png)
 
+## 功能特性
 
+- 按域名、IP、节点、代理等维度查看流量，方便快速定位异常流量来源。
+- 可以直观看到连接是否走代理，辅助你调整 Mihomo / Clash 规则。
+- 使用分钟级聚合落盘到 SQLite，磁盘占用更可控，查询也更直接。
+- 提供内置 Web 页面，无需额外部署前端服务或数据库。
+- 支持本地二进制直接运行，也支持 Docker 部署，适合单机和 OpenWrt 场景。
 
-## 怎么用
+## 项目现状
+
+这个项目目前已经基本完成了我最初的目标：
+
+- 观察哪些域名的流量偏大
+- 判断流量是否走了代理，并据此调整规则
+- 查看节点维度的流量
+- 查看 IP 维度的流量
+
+对我来说，它已经够用了。
+
+如果后续还有新的需求，更建议直接 fork 之后按自己的场景继续扩展；也可以结合下面这两个项目，再配合 AI 辅助开发，补上你真正需要的功能。
+
+参考项目：
+
+- [foru17/neko-master](https://github.com/foru17/neko-master)
+- [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd)
+
+## 快速开始
 
 ### 本地运行
 
@@ -135,11 +184,11 @@ docker run -d \
 
 ## 备注
 
-因为这个项目主要监控运行在 OpenWrt路由器 环境的 Clash，当前默认移除了进程维度相关展示。
+因为这个项目主要监控运行在 OpenWrt 路由器环境的 Clash，当前默认移除了进程维度相关展示。
 
 如果你需要进程模块，可以在此基础上自行 fork 后补充。
 
 ## 致谢
 
-页面接口参考了 [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd)。  
-[LinuxDO](https://linux.do) — the community where it all began
+- 页面接口参考了 [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd)。
+- [LinuxDO](https://linux.do) - the community where it all began
