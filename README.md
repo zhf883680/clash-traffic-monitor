@@ -42,6 +42,8 @@
 
 ![Traffic Monitor 页面预览](./readmeImg/image.png)
 
+![Traffic Monitor 自动切换预览](./readmeImg/image_check.png)
+
 ## 功能特性
 
 - 按域名、IP、节点、代理等维度查看流量，方便快速定位异常流量来源。
