@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -212,6 +213,235 @@ func TestResolveMihomoSettingsFallsBackToStoredValues(t *testing.T) {
 	}
 }
 
+func TestAutoSwitchSettingsRoundTrip(t *testing.T) {
+	svc := newTestService(t)
+
+	want := autoSwitchSettings{
+		Enabled:                 true,
+		ThresholdBytesPerMinute: 512 * 1024 * 1024,
+		CooldownSeconds:         900,
+		GroupTargets: []autoSwitchGroupTarget{
+			{GroupName: "🌍 国外媒体", TargetProxy: "🇸🇬 Singapore", Enabled: true},
+			{GroupName: "🐟 漏网之鱼", TargetProxy: "DIRECT", Enabled: false},
+		},
+	}
+
+	if err := saveAutoSwitchSettings(svc.db, want); err != nil {
+		t.Fatalf("saveAutoSwitchSettings: %v", err)
+	}
+
+	got, err := loadAutoSwitchSettings(svc.db)
+	if err != nil {
+		t.Fatalf("loadAutoSwitchSettings: %v", err)
+	}
+
+	if got.Enabled != want.Enabled {
+		t.Fatalf("expected enabled %v, got %v", want.Enabled, got.Enabled)
+	}
+	if got.ThresholdBytesPerMinute != want.ThresholdBytesPerMinute {
+		t.Fatalf("expected threshold %d, got %d", want.ThresholdBytesPerMinute, got.ThresholdBytesPerMinute)
+	}
+	if got.CooldownSeconds != want.CooldownSeconds {
+		t.Fatalf("expected cooldown %d, got %d", want.CooldownSeconds, got.CooldownSeconds)
+	}
+	if len(got.GroupTargets) != len(want.GroupTargets) {
+		t.Fatalf("expected %d group targets, got %d", len(want.GroupTargets), len(got.GroupTargets))
+	}
+	for index, target := range want.GroupTargets {
+		if got.GroupTargets[index] != target {
+			t.Fatalf("unexpected group target at %d: got %+v want %+v", index, got.GroupTargets[index], target)
+		}
+	}
+}
+
+func TestLoadAutoSwitchSettingsDefaults(t *testing.T) {
+	svc := newTestService(t)
+
+	got, err := loadAutoSwitchSettings(svc.db)
+	if err != nil {
+		t.Fatalf("loadAutoSwitchSettings: %v", err)
+	}
+
+	if got.Enabled {
+		t.Fatalf("expected auto switch to default disabled")
+	}
+	if got.ThresholdBytesPerMinute != 0 {
+		t.Fatalf("expected zero threshold by default, got %d", got.ThresholdBytesPerMinute)
+	}
+	if got.CooldownSeconds != 0 {
+		t.Fatalf("expected zero cooldown by default, got %d", got.CooldownSeconds)
+	}
+	if len(got.GroupTargets) != 0 {
+		t.Fatalf("expected no group targets by default, got %d", len(got.GroupTargets))
+	}
+}
+
+func TestListAutoSwitchEventsNewestFirst(t *testing.T) {
+	svc := newTestService(t)
+
+	if err := insertAutoSwitchEvent(svc.db, autoSwitchEvent{
+		TriggeredAt: 1000,
+		Host:        "a.example",
+		TotalBytes:  123,
+		WindowStart: 0,
+		WindowEnd:   60_000,
+		Results: []autoSwitchExecutionResult{
+			{GroupName: "🌍 国外媒体", TargetProxy: "🇸🇬 Singapore", Status: "switched"},
+		},
+	}); err != nil {
+		t.Fatalf("insertAutoSwitchEvent first: %v", err)
+	}
+
+	if err := insertAutoSwitchEvent(svc.db, autoSwitchEvent{
+		TriggeredAt: 2000,
+		Host:        "b.example",
+		TotalBytes:  456,
+		WindowStart: 60_000,
+		WindowEnd:   120_000,
+		Results: []autoSwitchExecutionResult{
+			{GroupName: "🐟 漏网之鱼", TargetProxy: "DIRECT", Status: "skipped"},
+		},
+		Error: "cooldown",
+	}); err != nil {
+		t.Fatalf("insertAutoSwitchEvent second: %v", err)
+	}
+
+	got, err := listAutoSwitchEvents(svc.db, 10)
+	if err != nil {
+		t.Fatalf("listAutoSwitchEvents: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(got))
+	}
+	if got[0].TriggeredAt != 2000 || got[0].Host != "b.example" {
+		t.Fatalf("expected newest event first, got %+v", got[0])
+	}
+	if got[0].Error != "cooldown" {
+		t.Fatalf("expected persisted error, got %q", got[0].Error)
+	}
+	if len(got[0].Results) != 1 || got[0].Results[0].GroupName != "🐟 漏网之鱼" {
+		t.Fatalf("unexpected first event results: %+v", got[0].Results)
+	}
+	if got[1].TriggeredAt != 1000 || got[1].Host != "a.example" {
+		t.Fatalf("expected oldest event second, got %+v", got[1])
+	}
+}
+
+func TestListControllableProxyGroupsFiltersToSelectAndFallback(t *testing.T) {
+	svc := newTestService(t)
+	svc.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/proxies" {
+				t.Fatalf("unexpected request path: %s", req.URL.Path)
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer test-secret" {
+				t.Fatalf("expected bearer token, got %q", got)
+			}
+
+			body := `{
+				"proxies": {
+					"🌍 国外媒体": {"type":"Selector","all":["⏬ 大流量节点","🚩 PROXY"],"now":"🚩 PROXY"},
+					"⏬ 大流量节点": {"type":"Fallback","all":["🇯🇵 Japan","🇸🇬 Singapore"],"now":"🇯🇵 Japan"},
+					"♻️ 自动选择": {"type":"URLTest","all":["🇯🇵 Japan","🇸🇬 Singapore"],"now":"🇸🇬 Singapore"},
+					"DIRECT": {"type":"Direct","all":[],"now":"DIRECT"}
+				}
+			}`
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	got, err := svc.listControllableProxyGroups(mihomoSettings{
+		URL:    "http://127.0.0.1:9090",
+		Secret: "test-secret",
+	})
+	if err != nil {
+		t.Fatalf("listControllableProxyGroups: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 controllable groups, got %d", len(got))
+	}
+	if got[0].Name != "⏬ 大流量节点" || got[0].Type != "fallback" {
+		t.Fatalf("unexpected first group: %+v", got[0])
+	}
+	if got[1].Name != "🌍 国外媒体" || got[1].Type != "select" {
+		t.Fatalf("unexpected second group: %+v", got[1])
+	}
+	if got[1].Now != "🚩 PROXY" {
+		t.Fatalf("expected current selection to be preserved, got %+v", got[1])
+	}
+	if len(got[1].All) != 2 || got[1].All[0] != "⏬ 大流量节点" {
+		t.Fatalf("unexpected candidates: %+v", got[1].All)
+	}
+}
+
+func TestSwitchProxyGroupRejectsTargetOutsideCandidates(t *testing.T) {
+	svc := newTestService(t)
+
+	err := svc.switchProxyGroup(mihomoSettings{URL: "http://127.0.0.1:9090"}, controllableProxyGroup{
+		Name: "🌍 国外媒体",
+		Type: "select",
+		Now:  "🚩 PROXY",
+		All:  []string{"⏬ 大流量节点", "🚩 PROXY"},
+	}, "🇺🇸 USA")
+	if err == nil {
+		t.Fatalf("expected invalid target to be rejected")
+	}
+	if !strings.Contains(err.Error(), "target proxy") {
+		t.Fatalf("expected target validation error, got %v", err)
+	}
+}
+
+func TestSwitchProxyGroupSendsSelectionRequest(t *testing.T) {
+	svc := newTestService(t)
+	svc.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodPut {
+				t.Fatalf("expected PUT request, got %s", req.Method)
+			}
+			if req.URL.Path != "/proxies/🌍 国外媒体" {
+				t.Fatalf("unexpected request path: %s", req.URL.Path)
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer test-secret" {
+				t.Fatalf("expected bearer token, got %q", got)
+			}
+
+			var payload map[string]string
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			if payload["name"] != "🇸🇬 Singapore" {
+				t.Fatalf("expected target proxy to be posted, got %+v", payload)
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	err := svc.switchProxyGroup(mihomoSettings{
+		URL:    "http://127.0.0.1:9090",
+		Secret: "test-secret",
+	}, controllableProxyGroup{
+		Name: "🌍 国外媒体",
+		Type: "select",
+		Now:  "🚩 PROXY",
+		All:  []string{"⏬ 大流量节点", "🇸🇬 Singapore"},
+	}, "🇸🇬 Singapore")
+	if err != nil {
+		t.Fatalf("switchProxyGroup: %v", err)
+	}
+}
+
 func TestDefaultDatabasePathUsesContainerDataDir(t *testing.T) {
 	original := isContainerRuntime
 	isContainerRuntime = func() bool { return true }
@@ -328,6 +558,218 @@ func TestProcessConnectionsBuffersAggregatesWithoutPersistingRawLogs(t *testing.
 	}
 }
 
+func TestProcessConnectionsAutoSwitchTriggersOncePerMinute(t *testing.T) {
+	svc := newTestService(t)
+
+	if err := saveAutoSwitchSettings(svc.db, autoSwitchSettings{
+		Enabled:                 true,
+		ThresholdBytesPerMinute: 300,
+		CooldownSeconds:         600,
+		GroupTargets: []autoSwitchGroupTarget{
+			{GroupName: "🌍 国外媒体", TargetProxy: "🇸🇬 Singapore", Enabled: true},
+		},
+	}); err != nil {
+		t.Fatalf("saveAutoSwitchSettings: %v", err)
+	}
+
+	svc.setMihomoSettings(mihomoSettings{URL: "http://127.0.0.1:9090", Secret: "test-secret"})
+	currentTime := time.Date(2026, 4, 27, 12, 0, 10, 0, time.Local)
+	svc.now = func() time.Time { return currentTime }
+
+	var putCount int
+	svc.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.Method == http.MethodGet && req.URL.Path == "/proxies":
+				body := `{"proxies":{"🌍 国外媒体":{"type":"Selector","all":["🚩 PROXY","🇸🇬 Singapore"],"now":"🚩 PROXY"}}}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+				}, nil
+			case req.Method == http.MethodPut && req.URL.Path == "/proxies/🌍 国外媒体":
+				putCount++
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	first := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-1",
+			Upload:   100,
+			Download: 100,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.2", Host: "video.example", DestinationIP: "1.1.1.1", Process: "chrome"},
+		}},
+	}
+	second := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-1",
+			Upload:   250,
+			Download: 150,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.2", Host: "video.example", DestinationIP: "1.1.1.1", Process: "chrome"},
+		}},
+	}
+	third := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-1",
+			Upload:   300,
+			Download: 200,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.2", Host: "video.example", DestinationIP: "1.1.1.1", Process: "chrome"},
+		}},
+	}
+
+	if err := svc.processConnections(first); err != nil {
+		t.Fatalf("processConnections first: %v", err)
+	}
+	if err := svc.processConnections(second); err != nil {
+		t.Fatalf("processConnections second: %v", err)
+	}
+	if err := svc.processConnections(third); err != nil {
+		t.Fatalf("processConnections third: %v", err)
+	}
+
+	if putCount != 1 {
+		t.Fatalf("expected exactly 1 switch request, got %d", putCount)
+	}
+	if got := svc.hostMinuteWindows["video.example"]; got == nil || got.TotalBytes != 500 {
+		t.Fatalf("expected minute window total 500, got %+v", got)
+	}
+
+	events, err := listAutoSwitchEvents(svc.db, 10)
+	if err != nil {
+		t.Fatalf("listAutoSwitchEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 auto switch event, got %d", len(events))
+	}
+	if events[0].Host != "video.example" || events[0].TotalBytes != 400 {
+		t.Fatalf("unexpected event payload: %+v", events[0])
+	}
+	if len(events[0].Results) != 1 || events[0].Results[0].Status != "switched" {
+		t.Fatalf("unexpected event results: %+v", events[0].Results)
+	}
+}
+
+func TestAutoSwitchCooldownSkipsNextMinuteTrigger(t *testing.T) {
+	svc := newTestService(t)
+
+	if err := saveAutoSwitchSettings(svc.db, autoSwitchSettings{
+		Enabled:                 true,
+		ThresholdBytesPerMinute: 300,
+		CooldownSeconds:         600,
+		GroupTargets: []autoSwitchGroupTarget{
+			{GroupName: "🌍 国外媒体", TargetProxy: "🇸🇬 Singapore", Enabled: true},
+		},
+	}); err != nil {
+		t.Fatalf("saveAutoSwitchSettings: %v", err)
+	}
+
+	svc.setMihomoSettings(mihomoSettings{URL: "http://127.0.0.1:9090"})
+	currentTime := time.Date(2026, 4, 27, 12, 0, 10, 0, time.Local)
+	svc.now = func() time.Time { return currentTime }
+
+	var putCount int
+	svc.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.Method == http.MethodGet && req.URL.Path == "/proxies":
+				body := `{"proxies":{"🌍 国外媒体":{"type":"Selector","all":["🚩 PROXY","🇸🇬 Singapore"],"now":"🚩 PROXY"}}}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+				}, nil
+			case req.Method == http.MethodPut && req.URL.Path == "/proxies/🌍 国外媒体":
+				putCount++
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	firstMinute := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-1",
+			Upload:   200,
+			Download: 200,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.2", Host: "video.example", DestinationIP: "1.1.1.1", Process: "chrome"},
+		}},
+	}
+	secondMinute := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-2",
+			Upload:   500,
+			Download: 0,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.3", Host: "download.example", DestinationIP: "8.8.8.8", Process: "wget"},
+		}},
+	}
+
+	if err := svc.processConnections(firstMinute); err != nil {
+		t.Fatalf("processConnections firstMinute: %v", err)
+	}
+
+	currentTime = currentTime.Add(time.Minute)
+	if err := svc.processConnections(secondMinute); err != nil {
+		t.Fatalf("processConnections secondMinute: %v", err)
+	}
+
+	if putCount != 1 {
+		t.Fatalf("expected cooldown to keep switch count at 1, got %d", putCount)
+	}
+
+	events, err := listAutoSwitchEvents(svc.db, 10)
+	if err != nil {
+		t.Fatalf("listAutoSwitchEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected cooldown to prevent second event, got %d", len(events))
+	}
+}
+
 func TestCollectOnceSkipsPollingWhenMihomoURLIsUnset(t *testing.T) {
 	svc := newTestService(t)
 	svc.client = &http.Client{
@@ -401,6 +843,142 @@ func TestHandleMihomoSettingsRejectsEmptyURL(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected bad request for empty mihomo url, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAutoSwitchSettingsRoundTrip(t *testing.T) {
+	svc := newTestService(t)
+
+	putReq := httptest.NewRequest(http.MethodPut, "/api/auto-switch/settings", bytes.NewBufferString(`{
+		"enabled": true,
+		"thresholdBytesPerMinute": 536870912,
+		"cooldownSeconds": 900,
+		"groupTargets": [
+			{"groupName":"🌍 国外媒体","targetProxy":"🇸🇬 Singapore","enabled":true}
+		]
+	}`))
+	putReq.Header.Set("Content-Type", "application/json")
+	putRec := httptest.NewRecorder()
+
+	svc.routes().ServeHTTP(putRec, putReq)
+
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("unexpected put status: %d body=%s", putRec.Code, putRec.Body.String())
+	}
+
+	var updated autoSwitchSettings
+	if err := json.Unmarshal(putRec.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode put response: %v", err)
+	}
+	if !updated.Enabled || updated.ThresholdBytesPerMinute != 536870912 || updated.CooldownSeconds != 900 {
+		t.Fatalf("unexpected saved settings: %+v", updated)
+	}
+	if len(updated.GroupTargets) != 1 || updated.GroupTargets[0].GroupName != "🌍 国外媒体" {
+		t.Fatalf("unexpected saved group targets: %+v", updated.GroupTargets)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/auto-switch/settings", nil)
+	getRec := httptest.NewRecorder()
+	svc.routes().ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("unexpected get status: %d body=%s", getRec.Code, getRec.Body.String())
+	}
+
+	var fetched autoSwitchSettings
+	if err := json.Unmarshal(getRec.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if fetched.Enabled != updated.Enabled || fetched.ThresholdBytesPerMinute != updated.ThresholdBytesPerMinute {
+		t.Fatalf("unexpected fetched settings: %+v want %+v", fetched, updated)
+	}
+}
+
+func TestHandleAutoSwitchSettingsRejectsInvalidThreshold(t *testing.T) {
+	svc := newTestService(t)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/auto-switch/settings", bytes.NewBufferString(`{
+		"enabled": true,
+		"thresholdBytesPerMinute": 0,
+		"cooldownSeconds": 60,
+		"groupTargets": [{"groupName":"🌍 国外媒体","targetProxy":"🇸🇬 Singapore","enabled":true}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	svc.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for invalid threshold, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAutoSwitchGroupsReturnsControllableGroups(t *testing.T) {
+	svc := newTestService(t)
+	svc.setMihomoSettings(mihomoSettings{URL: "http://127.0.0.1:9090"})
+	svc.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{
+				"proxies": {
+					"🌍 国外媒体": {"type":"Selector","all":["⏬ 大流量节点","🚩 PROXY"],"now":"🚩 PROXY"},
+					"♻️ 自动选择": {"type":"URLTest","all":["🇯🇵 Japan"],"now":"🇯🇵 Japan"}
+				}
+			}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auto-switch/groups", nil)
+	rec := httptest.NewRecorder()
+	svc.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var got []controllableProxyGroup
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "🌍 国外媒体" {
+		t.Fatalf("unexpected groups: %+v", got)
+	}
+}
+
+func TestHandleAutoSwitchEventsReturnsRecentEvents(t *testing.T) {
+	svc := newTestService(t)
+
+	if err := insertAutoSwitchEvent(svc.db, autoSwitchEvent{
+		TriggeredAt: 1234,
+		Host:        "video.example",
+		TotalBytes:  999,
+		WindowStart: 0,
+		WindowEnd:   60_000,
+		Results: []autoSwitchExecutionResult{
+			{GroupName: "🌍 国外媒体", TargetProxy: "🇸🇬 Singapore", Status: "switched"},
+		},
+	}); err != nil {
+		t.Fatalf("insertAutoSwitchEvent: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auto-switch/events", nil)
+	rec := httptest.NewRecorder()
+	svc.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var got []autoSwitchEvent
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 || got[0].Host != "video.example" {
+		t.Fatalf("unexpected events payload: %+v", got)
 	}
 }
 
@@ -727,8 +1305,26 @@ func TestEmbeddedIndexDisablesPeriodicAutoRefresh(t *testing.T) {
 	if !strings.Contains(html, `id="settingsPanel"`) || !strings.Contains(html, `id="settingsBtn"`) {
 		t.Fatalf("expected embedded index.html to include mihomo settings entry points")
 	}
+	for _, want := range []string{
+		`id="autoSwitchBtn"`,
+		`id="autoSwitchPanel" class="panel auto-switch-panel hidden"`,
+		`id="autoSwitchCancelBtn"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected embedded index.html to contain %q", want)
+		}
+	}
 	if !strings.Contains(script, `sendJSON("/api/settings/mihomo", "PUT", payload)`) {
 		t.Fatalf("expected embedded index.html to save mihomo settings through the settings API")
+	}
+	for _, want := range []string{
+		`elements.autoSwitchBtn.addEventListener("click", openAutoSwitchPanel)`,
+		`elements.autoSwitchCancelBtn.addEventListener("click", closeAutoSwitchPanel)`,
+		`state.autoSwitchOpen = false`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected embedded app.js to contain %q", want)
+		}
 	}
 	for _, label := range []string{"1 天", "7 天", "15 天", "30 天", "自定义"} {
 		if !strings.Contains(html, label) {
@@ -993,9 +1589,11 @@ func newTestService(t *testing.T) *service {
 	})
 
 	return &service{
-		db:              db,
-		lastConnections: make(map[string]connection),
-		aggregateBuffer: make(map[string]*aggregatedEntry),
+		db:                db,
+		now:               time.Now,
+		lastConnections:   make(map[string]connection),
+		aggregateBuffer:   make(map[string]*aggregatedEntry),
+		hostMinuteWindows: make(map[string]*hostTrafficWindow),
 	}
 }
 

@@ -48,6 +48,17 @@ const elements = {
   settingsSaveBtn: document.getElementById("settingsSaveBtn"),
   settingsCancelBtn: document.getElementById("settingsCancelBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
+  autoSwitchBtn: document.getElementById("autoSwitchBtn"),
+  autoSwitchPanel: document.getElementById("autoSwitchPanel"),
+  autoSwitchForm: document.getElementById("autoSwitchForm"),
+  autoSwitchEnabled: document.getElementById("autoSwitchEnabled"),
+  autoSwitchThreshold: document.getElementById("autoSwitchThreshold"),
+  autoSwitchCooldown: document.getElementById("autoSwitchCooldown"),
+  autoSwitchRefreshBtn: document.getElementById("autoSwitchRefreshBtn"),
+  autoSwitchSaveBtn: document.getElementById("autoSwitchSaveBtn"),
+  autoSwitchCancelBtn: document.getElementById("autoSwitchCancelBtn"),
+  autoSwitchGroupsBody: document.getElementById("autoSwitchGroupsBody"),
+  autoSwitchEventsBody: document.getElementById("autoSwitchEventsBody"),
   dashboardShell: document.getElementById("dashboardShell"),
   refreshBtn: document.getElementById("refreshBtn"),
   clearBtn: document.getElementById("clearBtn"),
@@ -87,6 +98,15 @@ const state = {
   },
   settingsOpen: false,
   settingsRequired: false,
+  autoSwitchOpen: false,
+  autoSwitch: {
+    enabled: false,
+    thresholdBytesPerMinute: 0,
+    cooldownSeconds: 0,
+    groupTargets: [],
+    groups: [],
+    events: [],
+  },
 }
 
 function isValidDimension(value) {
@@ -222,6 +242,22 @@ function formatBytes(bytes) {
   return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`
 }
 
+function bytesToMegabytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return ""
+  return String(Math.round(bytes / (1024 * 1024)))
+}
+
+function megabytesToBytes(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0
+  return Math.round(parsed * 1024 * 1024)
+}
+
+function secondsToMinutes(value) {
+  if (!Number.isFinite(value) || value <= 0) return ""
+  return String(Math.round(value / 60))
+}
+
 function escapeHTML(text) {
   return String(text ?? "")
     .replaceAll("&", "&amp;")
@@ -351,6 +387,162 @@ function syncSettingsUI() {
   syncContextSummary()
 }
 
+function syncAutoSwitchUI() {
+  elements.autoSwitchPanel.classList.toggle("hidden", !state.autoSwitchOpen)
+}
+
+function mergeAutoSwitchGroups(groups, groupTargets) {
+  const savedTargets = new Map(
+    (groupTargets || []).map((item) => [
+      item.groupName,
+      {
+        enabled: Boolean(item.enabled),
+        targetProxy: item.targetProxy || "",
+      },
+    ]),
+  )
+
+  return (groups || []).map((group) => {
+    const saved = savedTargets.get(group.name) || {}
+    return {
+      ...group,
+      enabled: Boolean(saved.enabled),
+      targetProxy: saved.targetProxy && group.all.includes(saved.targetProxy)
+        ? saved.targetProxy
+        : group.now || group.all[0] || "",
+    }
+  })
+}
+
+function syncAutoSwitchForm() {
+  elements.autoSwitchEnabled.checked = Boolean(state.autoSwitch.enabled)
+  elements.autoSwitchThreshold.value = bytesToMegabytes(state.autoSwitch.thresholdBytesPerMinute)
+  elements.autoSwitchCooldown.value = secondsToMinutes(state.autoSwitch.cooldownSeconds)
+  renderAutoSwitchGroups()
+  renderAutoSwitchEvents()
+}
+
+function renderAutoSwitchGroups() {
+  if (!state.mihomoSettings.url) {
+    elements.autoSwitchGroupsBody.innerHTML =
+      '<tr><td colspan="5" class="empty">连接 Mihomo 后加载可控策略组</td></tr>'
+    return
+  }
+
+  if (!state.autoSwitch.groups.length) {
+    elements.autoSwitchGroupsBody.innerHTML =
+      '<tr><td colspan="5" class="empty">当前没有可控策略组，仅展示 select 和 fallback</td></tr>'
+    return
+  }
+
+  elements.autoSwitchGroupsBody.innerHTML = state.autoSwitch.groups
+    .map((group) => {
+      const options = (group.all || [])
+        .map((proxy) => {
+          const selected = proxy === group.targetProxy ? " selected" : ""
+          return `<option value="${escapeHTML(proxy)}"${selected}>${escapeHTML(proxy)}</option>`
+        })
+        .join("")
+
+      return `
+        <tr data-group-name="${escapeHTML(group.name)}">
+          <td>
+            <input class="auto-switch-group-enabled" type="checkbox" ${group.enabled ? "checked" : ""} />
+          </td>
+          <td><div class="mono">${renderTruncatedText(group.name, "host", "-")}</div></td>
+          <td><span class="chip route">${escapeHTML(group.type)}</span></td>
+          <td><div class="mono">${renderTruncatedText(group.now || "-", "host", "-")}</div></td>
+          <td>
+            <select class="auto-switch-target-select">
+              ${options}
+            </select>
+          </td>
+        </tr>
+      `
+    })
+    .join("")
+}
+
+function renderAutoSwitchEvents() {
+  if (!state.autoSwitch.events.length) {
+    elements.autoSwitchEventsBody.innerHTML =
+      '<div class="detail-empty">当前还没有自动切换记录</div>'
+    return
+  }
+
+  elements.autoSwitchEventsBody.innerHTML = state.autoSwitch.events
+    .map((event) => {
+      const results = (event.results || [])
+        .map((result) => {
+          const extra = result.message ? ` · ${escapeHTML(result.message)}` : ""
+          return `<div class="auto-switch-result">${escapeHTML(result.groupName)} -> ${escapeHTML(result.targetProxy)} · ${escapeHTML(result.status)}${extra}</div>`
+        })
+        .join("")
+
+      const errorLine = event.error
+        ? `<div class="auto-switch-event-error">${escapeHTML(event.error)}</div>`
+        : ""
+
+      return `
+        <article class="auto-switch-event-card">
+          <div class="auto-switch-event-top">
+            <strong>${escapeHTML(event.host || "Unknown")}</strong>
+            <span>${escapeHTML(formatDateTime(event.triggeredAt))}</span>
+          </div>
+          <div class="auto-switch-event-meta">
+            <span>分钟累计 ${escapeHTML(formatBytes(event.totalBytes || 0))}</span>
+            <span>窗口 ${escapeHTML(formatDateTime(event.windowStart))} - ${escapeHTML(formatDateTime(event.windowEnd))}</span>
+          </div>
+          <div class="auto-switch-result-list">${results || '<div class="auto-switch-result">没有执行记录</div>'}</div>
+          ${errorLine}
+        </article>
+      `
+    })
+    .join("")
+}
+
+async function loadAutoSwitchSettings() {
+  const settings = await fetchJSON("/api/auto-switch/settings")
+  state.autoSwitch.enabled = Boolean(settings.enabled)
+  state.autoSwitch.thresholdBytesPerMinute = Number(settings.thresholdBytesPerMinute || 0)
+  state.autoSwitch.cooldownSeconds = Number(settings.cooldownSeconds || 0)
+  state.autoSwitch.groupTargets = Array.isArray(settings.groupTargets) ? settings.groupTargets : []
+}
+
+async function loadAutoSwitchGroups() {
+  if (!state.mihomoSettings.url) {
+    state.autoSwitch.groups = []
+    renderAutoSwitchGroups()
+    return
+  }
+
+  const groups = await fetchJSON("/api/auto-switch/groups")
+  state.autoSwitch.groups = mergeAutoSwitchGroups(groups, state.autoSwitch.groupTargets)
+  renderAutoSwitchGroups()
+}
+
+async function loadAutoSwitchEvents() {
+  const events = await fetchJSON("/api/auto-switch/events")
+  state.autoSwitch.events = Array.isArray(events) ? events : []
+  renderAutoSwitchEvents()
+}
+
+async function refreshAutoSwitchData() {
+  await loadAutoSwitchSettings()
+  await Promise.all([loadAutoSwitchGroups(), loadAutoSwitchEvents()])
+  syncAutoSwitchForm()
+}
+
+function collectAutoSwitchGroupTargets() {
+  const rows = Array.from(elements.autoSwitchGroupsBody.querySelectorAll("tr[data-group-name]"))
+  return rows.map((row) => {
+    const groupName = row.dataset.groupName || ""
+    const enabled = row.querySelector(".auto-switch-group-enabled")?.checked || false
+    const targetProxy = row.querySelector(".auto-switch-target-select")?.value || ""
+    return { groupName, enabled, targetProxy }
+  })
+}
+
 async function loadSettings() {
   const settings = await fetchJSON("/api/settings/mihomo")
   state.mihomoSettings = {
@@ -365,8 +557,10 @@ async function loadSettings() {
 
 function openSettingsPanel() {
   state.settingsOpen = true
+  state.autoSwitchOpen = false
   syncSettingsForm()
   syncSettingsUI()
+  syncAutoSwitchUI()
   elements.settingsUrl.focus()
 }
 
@@ -375,6 +569,21 @@ function closeSettingsPanel() {
   state.settingsOpen = false
   syncSettingsForm()
   syncSettingsUI()
+}
+
+function openAutoSwitchPanel() {
+  state.autoSwitchOpen = true
+  state.settingsOpen = false
+  syncAutoSwitchForm()
+  syncSettingsUI()
+  syncAutoSwitchUI()
+  elements.autoSwitchThreshold.focus()
+}
+
+function closeAutoSwitchPanel() {
+  state.autoSwitchOpen = false
+  syncAutoSwitchForm()
+  syncAutoSwitchUI()
 }
 
 async function saveSettings(event) {
@@ -399,12 +608,45 @@ async function saveSettings(event) {
     syncSettingsForm()
     syncSettingsUI()
     setStatus("Mihomo 设置已保存")
+    await refreshAutoSwitchData()
     await loadData()
   } catch (error) {
     console.error(error)
     setStatus(error.message || "保存 Mihomo 设置失败", true)
   } finally {
     elements.settingsSaveBtn.disabled = false
+  }
+}
+
+async function saveAutoSwitchSettings(event) {
+  event.preventDefault()
+
+  const payload = {
+    enabled: elements.autoSwitchEnabled.checked,
+    thresholdBytesPerMinute: megabytesToBytes(elements.autoSwitchThreshold.value),
+    cooldownSeconds: Math.max(0, Number(elements.autoSwitchCooldown.value || 0)) * 60,
+    groupTargets: collectAutoSwitchGroupTargets(),
+  }
+
+  elements.autoSwitchSaveBtn.disabled = true
+  setStatus("正在保存自动切换配置...")
+
+  try {
+    const saved = await sendJSON("/api/auto-switch/settings", "PUT", payload)
+    state.autoSwitch.enabled = Boolean(saved.enabled)
+    state.autoSwitch.thresholdBytesPerMinute = Number(saved.thresholdBytesPerMinute || 0)
+    state.autoSwitch.cooldownSeconds = Number(saved.cooldownSeconds || 0)
+    state.autoSwitch.groupTargets = Array.isArray(saved.groupTargets) ? saved.groupTargets : []
+    state.autoSwitch.groups = mergeAutoSwitchGroups(state.autoSwitch.groups, state.autoSwitch.groupTargets)
+    state.autoSwitchOpen = false
+    syncAutoSwitchForm()
+    syncAutoSwitchUI()
+    setStatus("自动切换配置已保存")
+  } catch (error) {
+    console.error(error)
+    setStatus(error.message || "保存自动切换配置失败", true)
+  } finally {
+    elements.autoSwitchSaveBtn.disabled = false
   }
 }
 
@@ -899,6 +1141,22 @@ elements.dimensionTabs.forEach((button) => {
 elements.settingsBtn.addEventListener("click", openSettingsPanel)
 elements.settingsForm.addEventListener("submit", saveSettings)
 elements.settingsCancelBtn.addEventListener("click", closeSettingsPanel)
+elements.autoSwitchBtn.addEventListener("click", openAutoSwitchPanel)
+elements.autoSwitchForm.addEventListener("submit", saveAutoSwitchSettings)
+elements.autoSwitchCancelBtn.addEventListener("click", closeAutoSwitchPanel)
+elements.autoSwitchRefreshBtn.addEventListener("click", async () => {
+  elements.autoSwitchRefreshBtn.disabled = true
+  setStatus("正在刷新可控策略组...")
+  try {
+    await loadAutoSwitchGroups()
+    setStatus("可控策略组已刷新")
+  } catch (error) {
+    console.error(error)
+    setStatus(error.message || "刷新可控策略组失败", true)
+  } finally {
+    elements.autoSwitchRefreshBtn.disabled = false
+  }
+})
 elements.refreshBtn.addEventListener("click", loadData)
 elements.clearBtn.addEventListener("click", clearLogs)
 elements.detailSearch.addEventListener("input", (event) => {
@@ -976,6 +1234,7 @@ async function initializeApp() {
   renderPrimaryTable([])
   renderTrend([])
   resetDetailPanels()
+  syncAutoSwitchUI()
 
   try {
     await loadSettings()
@@ -983,6 +1242,7 @@ async function initializeApp() {
       setStatus("请先填写 Mihomo URL 和 Secret")
       return
     }
+    await refreshAutoSwitchData()
     await loadData()
   } catch (error) {
     console.error(error)

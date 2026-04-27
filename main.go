@@ -51,6 +51,44 @@ type mihomoSettings struct {
 	Secret string `json:"secret"`
 }
 
+type autoSwitchSettings struct {
+	Enabled                 bool                    `json:"enabled"`
+	ThresholdBytesPerMinute int64                   `json:"thresholdBytesPerMinute"`
+	CooldownSeconds         int64                   `json:"cooldownSeconds"`
+	GroupTargets            []autoSwitchGroupTarget `json:"groupTargets"`
+}
+
+type autoSwitchGroupTarget struct {
+	GroupName   string `json:"groupName"`
+	TargetProxy string `json:"targetProxy"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type autoSwitchExecutionResult struct {
+	GroupName   string `json:"groupName"`
+	TargetProxy string `json:"targetProxy"`
+	Status      string `json:"status"`
+	Message     string `json:"message,omitempty"`
+}
+
+type autoSwitchEvent struct {
+	ID          int64                       `json:"id"`
+	TriggeredAt int64                       `json:"triggeredAt"`
+	Host        string                      `json:"host"`
+	TotalBytes  int64                       `json:"totalBytes"`
+	WindowStart int64                       `json:"windowStart"`
+	WindowEnd   int64                       `json:"windowEnd"`
+	Results     []autoSwitchExecutionResult `json:"results"`
+	Error       string                      `json:"error"`
+}
+
+type controllableProxyGroup struct {
+	Name string   `json:"name"`
+	Type string   `json:"type"`
+	Now  string   `json:"now"`
+	All  []string `json:"all"`
+}
+
 type trafficLog struct {
 	Timestamp     int64    `json:"timestamp"`
 	SourceIP      string   `json:"sourceIP"`
@@ -108,18 +146,32 @@ type connectionsResponse struct {
 	DownloadTotal int64        `json:"downloadTotal"`
 }
 
+type mihomoProxyInfo struct {
+	Type string   `json:"type"`
+	Now  string   `json:"now"`
+	All  []string `json:"all"`
+}
+
+type mihomoProxiesResponse struct {
+	Proxies map[string]mihomoProxyInfo `json:"proxies"`
+}
+
 type service struct {
 	db                *sql.DB
 	client            *http.Client
+	now               func() time.Time
 	cfg               config
 	mu                sync.Mutex
 	mihomoSettings    mihomoSettings
 	lastConnections   map[string]connection
 	lastUploadTotal   int64
 	lastDownloadTotal int64
+	lastAutoSwitchAt  int64
+	lastAutoSwitchMin int64
 	lastCleanup       time.Time
 	lastVacuum        time.Time
 	aggregateBuffer   map[string]*aggregatedEntry
+	hostMinuteWindows map[string]*hostTrafficWindow
 }
 
 type aggregatedEntry struct {
@@ -134,6 +186,12 @@ type aggregatedEntry struct {
 	Upload        int64
 	Download      int64
 	Count         int64
+}
+
+type hostTrafficWindow struct {
+	BucketStart int64
+	BucketEnd   int64
+	TotalBytes  int64
 }
 
 func main() {
@@ -156,11 +214,13 @@ func main() {
 	svc := &service{
 		db:              db,
 		client:          &http.Client{Timeout: 10 * time.Second},
+		now:             time.Now,
 		cfg:             cfg,
 		mihomoSettings:  runtimeSettings,
 		lastConnections: make(map[string]connection),
 		lastVacuum:      time.Now(),
 		aggregateBuffer: make(map[string]*aggregatedEntry),
+		hostMinuteWindows: make(map[string]*hostTrafficWindow),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -282,6 +342,25 @@ func openDatabase(path string) (*sql.DB, error) {
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL DEFAULT ''
 	);
+
+	CREATE TABLE IF NOT EXISTS auto_switch_group_targets (
+		group_name TEXT PRIMARY KEY,
+		target_proxy TEXT NOT NULL,
+		enabled INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS auto_switch_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		triggered_at INTEGER NOT NULL,
+		host TEXT NOT NULL,
+		total_bytes INTEGER NOT NULL,
+		window_start INTEGER NOT NULL,
+		window_end INTEGER NOT NULL,
+		results_json TEXT NOT NULL DEFAULT '[]',
+		error TEXT NOT NULL DEFAULT ''
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_auto_switch_events_triggered_at ON auto_switch_events(triggered_at DESC);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -391,6 +470,295 @@ func resolveMihomoSettings(db *sql.DB, envURL, envSecret string) (mihomoSettings
 	}
 
 	return resolved, nil
+}
+
+func loadAutoSwitchSettings(db *sql.DB) (autoSwitchSettings, error) {
+	rows, err := db.Query(`
+		SELECT key, value
+		FROM app_settings
+		WHERE key IN ('auto_switch_enabled', 'auto_switch_threshold_bytes_per_minute', 'auto_switch_cooldown_seconds')
+	`)
+	if err != nil {
+		return autoSwitchSettings{}, err
+	}
+	defer rows.Close()
+
+	settings := autoSwitchSettings{}
+	for rows.Next() {
+		var key string
+		var value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return autoSwitchSettings{}, err
+		}
+
+		switch key {
+		case "auto_switch_enabled":
+			settings.Enabled = value == "1"
+		case "auto_switch_threshold_bytes_per_minute":
+			settings.ThresholdBytesPerMinute, err = strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return autoSwitchSettings{}, err
+			}
+		case "auto_switch_cooldown_seconds":
+			settings.CooldownSeconds, err = strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return autoSwitchSettings{}, err
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return autoSwitchSettings{}, err
+	}
+
+	groupRows, err := db.Query(`
+		SELECT group_name, target_proxy, enabled
+		FROM auto_switch_group_targets
+		ORDER BY rowid ASC
+	`)
+	if err != nil {
+		return autoSwitchSettings{}, err
+	}
+	defer groupRows.Close()
+
+	for groupRows.Next() {
+		var target autoSwitchGroupTarget
+		var enabled int
+		if err := groupRows.Scan(&target.GroupName, &target.TargetProxy, &enabled); err != nil {
+			return autoSwitchSettings{}, err
+		}
+		target.Enabled = enabled == 1
+		settings.GroupTargets = append(settings.GroupTargets, target)
+	}
+	if err := groupRows.Err(); err != nil {
+		return autoSwitchSettings{}, err
+	}
+
+	return settings, nil
+}
+
+func saveAutoSwitchSettings(db *sql.DB, settings autoSwitchSettings) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+
+	values := map[string]string{
+		"auto_switch_enabled":                    "0",
+		"auto_switch_threshold_bytes_per_minute": strconv.FormatInt(settings.ThresholdBytesPerMinute, 10),
+		"auto_switch_cooldown_seconds":           strconv.FormatInt(settings.CooldownSeconds, 10),
+	}
+	if settings.Enabled {
+		values["auto_switch_enabled"] = "1"
+	}
+
+	for key, value := range values {
+		if _, err := tx.Exec(`
+			INSERT INTO app_settings (key, value)
+			VALUES (?, ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value
+		`, key, value); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	if _, err := tx.Exec(`DELETE FROM auto_switch_group_targets`); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO auto_switch_group_targets (group_name, target_proxy, enabled)
+		VALUES (?, ?, ?)
+	`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+
+	for _, target := range settings.GroupTargets {
+		enabled := 0
+		if target.Enabled {
+			enabled = 1
+		}
+		if _, err := stmt.Exec(target.GroupName, target.TargetProxy, enabled); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func insertAutoSwitchEvent(db *sql.DB, event autoSwitchEvent) error {
+	resultsJSON, err := json.Marshal(event.Results)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO auto_switch_events
+		(triggered_at, host, total_bytes, window_start, window_end, results_json, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, event.TriggeredAt, event.Host, event.TotalBytes, event.WindowStart, event.WindowEnd, string(resultsJSON), event.Error)
+	return err
+}
+
+func listAutoSwitchEvents(db *sql.DB, limit int) ([]autoSwitchEvent, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := db.Query(`
+		SELECT id, triggered_at, host, total_bytes, window_start, window_end, results_json, error
+		FROM auto_switch_events
+		ORDER BY triggered_at DESC, id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]autoSwitchEvent, 0)
+	for rows.Next() {
+		var event autoSwitchEvent
+		var resultsJSON string
+		if err := rows.Scan(
+			&event.ID,
+			&event.TriggeredAt,
+			&event.Host,
+			&event.TotalBytes,
+			&event.WindowStart,
+			&event.WindowEnd,
+			&resultsJSON,
+			&event.Error,
+		); err != nil {
+			return nil, err
+		}
+
+		if resultsJSON != "" {
+			if err := json.Unmarshal([]byte(resultsJSON), &event.Results); err != nil {
+				return nil, err
+			}
+		}
+
+		events = append(events, event)
+	}
+
+	return events, rows.Err()
+}
+
+func normalizeProxyGroupType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "selector", "select":
+		return "select"
+	case "fallback":
+		return "fallback"
+	default:
+		return ""
+	}
+}
+
+func (s *service) listControllableProxyGroups(settings mihomoSettings) ([]controllableProxyGroup, error) {
+	if settings.URL == "" {
+		return nil, errors.New("mihomo url is not configured")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, settings.URL+"/proxies", nil)
+	if err != nil {
+		return nil, err
+	}
+	if settings.Secret != "" {
+		req.Header.Set("Authorization", "Bearer "+settings.Secret)
+	}
+
+	client := s.client
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	var payload mihomoProxiesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	groups := make([]controllableProxyGroup, 0)
+	for name, proxy := range payload.Proxies {
+		groupType := normalizeProxyGroupType(proxy.Type)
+		if groupType == "" {
+			continue
+		}
+
+		groups = append(groups, controllableProxyGroup{
+			Name: name,
+			Type: groupType,
+			Now:  strings.TrimSpace(proxy.Now),
+			All:  append([]string(nil), proxy.All...),
+		})
+	}
+
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].Name < groups[j].Name
+	})
+
+	return groups, nil
+}
+
+func (s *service) switchProxyGroup(settings mihomoSettings, group controllableProxyGroup, targetProxy string) error {
+	group.Type = normalizeProxyGroupType(group.Type)
+	if group.Type == "" {
+		return errors.New("proxy group type is not controllable")
+	}
+
+	targetProxy = strings.TrimSpace(targetProxy)
+	if targetProxy == "" {
+		return errors.New("target proxy is required")
+	}
+	if !containsString(group.All, targetProxy) {
+		return fmt.Errorf("target proxy %q is not available in group %q", targetProxy, group.Name)
+	}
+
+	body, err := json.Marshal(map[string]string{"name": targetProxy})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, settings.URL+"/proxies/"+group.Name, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if settings.Secret != "" {
+		req.Header.Set("Authorization", "Bearer "+settings.Secret)
+	}
+
+	client := s.client
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func backfillAggregatedLogs(db *sql.DB, beforeMS int64) error {
@@ -537,8 +905,16 @@ func (s *service) fetchConnections(ctx context.Context, settings mihomoSettings)
 	return &payload, nil
 }
 
+func (s *service) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
 func (s *service) processConnections(payload *connectionsResponse) error {
-	nowMS := time.Now().UnixMilli()
+	now := s.currentTime()
+	nowMS := now.UnixMilli()
 
 	s.mu.Lock()
 	if payload.UploadTotal < s.lastUploadTotal || payload.DownloadTotal < s.lastDownloadTotal {
@@ -601,21 +977,176 @@ func (s *service) processConnections(payload *connectionsResponse) error {
 		if err := s.addToAggregateBuffer(logs, nowMS); err != nil {
 			return err
 		}
+		if err := s.evaluateAutoSwitch(logs, nowMS); err != nil {
+			log.Printf("auto switch evaluation: %v", err)
+		}
 	}
 
 	if err := s.flushCompletedAggregateBuckets(nowMS); err != nil {
 		log.Printf("flush aggregate buffer: %v", err)
 	}
 
-	if time.Since(s.lastCleanup) >= time.Hour {
+	if now.Sub(s.lastCleanup) >= time.Hour {
 		if err := s.cleanupOldLogs(nowMS); err != nil {
 			log.Printf("cleanup old logs: %v", err)
 		} else {
-			s.lastCleanup = time.Now()
+			s.lastCleanup = now
 		}
 	}
 
 	return nil
+}
+
+func (s *service) evaluateAutoSwitch(logs []trafficLog, nowMS int64) error {
+	settings, err := loadAutoSwitchSettings(s.db)
+	if err != nil {
+		return err
+	}
+	if !settings.Enabled || settings.ThresholdBytesPerMinute <= 0 {
+		return nil
+	}
+
+	triggerHost, triggerTotal, bucketStart, bucketEnd := s.updateHostMinuteWindows(logs, nowMS, settings.ThresholdBytesPerMinute)
+	if triggerHost == "" {
+		return nil
+	}
+
+	if s.isAutoSwitchSuppressed(bucketStart, nowMS, settings.CooldownSeconds) {
+		return nil
+	}
+
+	results, execErr := s.executeAutoSwitch(settings)
+	event := autoSwitchEvent{
+		TriggeredAt: nowMS,
+		Host:        triggerHost,
+		TotalBytes:  triggerTotal,
+		WindowStart: bucketStart,
+		WindowEnd:   bucketEnd,
+		Results:     results,
+	}
+	if execErr != nil {
+		event.Error = execErr.Error()
+	}
+	if err := insertAutoSwitchEvent(s.db, event); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.lastAutoSwitchAt = nowMS
+	s.lastAutoSwitchMin = bucketStart
+	s.mu.Unlock()
+	return execErr
+}
+
+func (s *service) updateHostMinuteWindows(logs []trafficLog, nowMS int64, threshold int64) (string, int64, int64, int64) {
+	bucketStart := (nowMS / 60000) * 60000
+	bucketEnd := bucketStart + 60000
+	if threshold <= 0 {
+		return "", 0, bucketStart, bucketEnd
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.hostMinuteWindows == nil {
+		s.hostMinuteWindows = make(map[string]*hostTrafficWindow)
+	}
+
+	for _, entry := range logs {
+		total := entry.Upload + entry.Download
+		if total <= 0 {
+			continue
+		}
+
+		window := s.hostMinuteWindows[entry.Host]
+		if window == nil || window.BucketStart != bucketStart {
+			window = &hostTrafficWindow{
+				BucketStart: bucketStart,
+				BucketEnd:   bucketEnd,
+			}
+			s.hostMinuteWindows[entry.Host] = window
+		}
+
+		previousTotal := window.TotalBytes
+		window.TotalBytes += total
+		if previousTotal < threshold && window.TotalBytes >= threshold && s.lastAutoSwitchMin != bucketStart {
+			return entry.Host, window.TotalBytes, bucketStart, bucketEnd
+		}
+	}
+
+	return "", 0, bucketStart, bucketEnd
+}
+
+func (s *service) isAutoSwitchSuppressed(bucketStart, nowMS, cooldownSeconds int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lastAutoSwitchMin == bucketStart {
+		return true
+	}
+	if cooldownSeconds > 0 && s.lastAutoSwitchAt > 0 && nowMS < s.lastAutoSwitchAt+cooldownSeconds*1000 {
+		return true
+	}
+	return false
+}
+
+func (s *service) executeAutoSwitch(settings autoSwitchSettings) ([]autoSwitchExecutionResult, error) {
+	mihomo := s.currentMihomoSettings()
+	groups, err := s.listControllableProxyGroups(mihomo)
+	if err != nil {
+		return nil, err
+	}
+
+	groupByName := make(map[string]controllableProxyGroup, len(groups))
+	for _, group := range groups {
+		groupByName[group.Name] = group
+	}
+
+	results := make([]autoSwitchExecutionResult, 0, len(settings.GroupTargets))
+	for _, target := range settings.GroupTargets {
+		if !target.Enabled {
+			continue
+		}
+
+		group, ok := groupByName[target.GroupName]
+		if !ok {
+			results = append(results, autoSwitchExecutionResult{
+				GroupName:   target.GroupName,
+				TargetProxy: target.TargetProxy,
+				Status:      "error",
+				Message:     "group not found",
+			})
+			continue
+		}
+
+		if group.Now == target.TargetProxy {
+			results = append(results, autoSwitchExecutionResult{
+				GroupName:   target.GroupName,
+				TargetProxy: target.TargetProxy,
+				Status:      "skipped",
+				Message:     "already selected",
+			})
+			continue
+		}
+
+		if err := s.switchProxyGroup(mihomo, group, target.TargetProxy); err != nil {
+			results = append(results, autoSwitchExecutionResult{
+				GroupName:   target.GroupName,
+				TargetProxy: target.TargetProxy,
+				Status:      "error",
+				Message:     err.Error(),
+			})
+			continue
+		}
+
+		results = append(results, autoSwitchExecutionResult{
+			GroupName:   target.GroupName,
+			TargetProxy: target.TargetProxy,
+			Status:      "switched",
+		})
+	}
+
+	return results, nil
 }
 
 func (s *service) insertLogs(logs []trafficLog) error {
@@ -806,6 +1337,9 @@ func (s *service) routes() http.Handler {
 	mux.Handle("/", fileServer)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/settings/mihomo", s.handleMihomoSettings)
+	mux.HandleFunc("/api/auto-switch/settings", s.handleAutoSwitchSettings)
+	mux.HandleFunc("/api/auto-switch/groups", s.handleAutoSwitchGroups)
+	mux.HandleFunc("/api/auto-switch/events", s.handleAutoSwitchEvents)
 	mux.HandleFunc("/api/traffic/aggregate", s.handleAggregate)
 	mux.HandleFunc("/api/traffic/substats", s.handleSubstats)
 	mux.HandleFunc("/api/traffic/proxy-stats", s.handleProxyStats)
@@ -880,6 +1414,82 @@ func (s *service) handleMihomoSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeMethodNotAllowed(w)
 	}
+}
+
+func validateAutoSwitchSettings(settings autoSwitchSettings) error {
+	if settings.Enabled && settings.ThresholdBytesPerMinute <= 0 {
+		return errors.New("thresholdBytesPerMinute must be greater than 0 when auto switch is enabled")
+	}
+	if settings.CooldownSeconds < 0 {
+		return errors.New("cooldownSeconds must be 0 or greater")
+	}
+
+	for _, target := range settings.GroupTargets {
+		if strings.TrimSpace(target.GroupName) == "" {
+			return errors.New("groupName is required")
+		}
+		if strings.TrimSpace(target.TargetProxy) == "" {
+			return errors.New("targetProxy is required")
+		}
+	}
+	return nil
+}
+
+func (s *service) handleAutoSwitchSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := loadAutoSwitchSettings(s.db)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, settings)
+	case http.MethodPut:
+		var payload autoSwitchSettings
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid json body"))
+			return
+		}
+		if err := validateAutoSwitchSettings(payload); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := saveAutoSwitchSettings(s.db, payload); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, payload)
+	default:
+		writeMethodNotAllowed(w)
+	}
+}
+
+func (s *service) handleAutoSwitchGroups(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	groups, err := s.listControllableProxyGroups(s.currentMihomoSettings())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, groups)
+}
+
+func (s *service) handleAutoSwitchEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	events, err := listAutoSwitchEvents(s.db, 20)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 func (s *service) handleAggregate(w http.ResponseWriter, r *http.Request) {
@@ -1699,6 +2309,15 @@ func parseInt64(value string, fallback int64) int64 {
 		return fallback
 	}
 	return parsed
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

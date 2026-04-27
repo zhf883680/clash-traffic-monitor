@@ -50,6 +50,7 @@
               </div>
             </div>
             <button id="settingsBtn" class="toolbar-action ghost" type="button">连接设置</button>
+            <button id="autoSwitchBtn" class="toolbar-action ghost" type="button">自动切换</button>
             <button id="refreshBtn" class="toolbar-action primary" type="button">刷新</button>
             <button id="clearBtn" class="toolbar-action danger" type="button">清空</button>
           </div>
@@ -130,6 +131,75 @@
               启动时如果传入了 `MIHOMO_URL` 或 `MIHOMO_SECRET`，重启后仍会优先使用环境变量，并覆盖这里保存的值。
             </div>
           </form>
+        </div>
+      </section>
+
+      <section id="autoSwitchPanel" class="panel auto-switch-panel hidden">
+        <div class="panel-head auto-switch-head">
+          <div>
+            <div class="summary-eyebrow">Auto Switch</div>
+            <h2 class="panel-title">大流量自动切换预案(beta)</h2>
+          </div>
+          <button id="autoSwitchRefreshBtn" class="toolbar-action ghost" type="button">
+            刷新策略组
+          </button>
+        </div>
+
+        <div class="auto-switch-layout">
+          <form id="autoSwitchForm" class="auto-switch-form">
+            <div class="auto-switch-grid">
+              <label class="settings-field checkbox-field">
+                <span>启用自动切换</span>
+                <input id="autoSwitchEnabled" type="checkbox" />
+              </label>
+              <label class="settings-field">
+                <span>1 分钟阈值（MB）</span>
+                <input id="autoSwitchThreshold" type="number" min="1" step="1" placeholder="例如 512" />
+              </label>
+              <label class="settings-field">
+                <span>冷却时间（分钟）</span>
+                <input id="autoSwitchCooldown" type="number" min="0" step="1" placeholder="例如 10" />
+              </label>
+            </div>
+
+            <div class="auto-switch-table-wrap">
+              <table class="compact-table auto-switch-table">
+                <thead>
+                  <tr>
+                    <th>启用</th>
+                    <th>策略组</th>
+                    <th>类型</th>
+                    <th>当前节点</th>
+                    <th>目标节点</th>
+                  </tr>
+                </thead>
+                <tbody id="autoSwitchGroupsBody">
+                  <tr>
+                    <td colspan="5" class="empty">连接 Mihomo 后加载可控策略组</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="settings-actions">
+              <button id="autoSwitchSaveBtn" class="toolbar-action primary" type="submit">
+                保存自动切换配置
+              </button>
+              <button id="autoSwitchCancelBtn" class="toolbar-action ghost" type="button">
+                取消
+              </button>
+            </div>
+          </form>
+
+          <section class="auto-switch-events">
+            <div class="auto-switch-events-head">
+              <h3>最近触发记录</h3>
+              <p>记录命中的域名、分钟累计流量和每个策略组的执行结果。</p>
+            </div>
+            <div id="autoSwitchEventsBody" class="auto-switch-events-list">
+              <div class="detail-empty">当前还没有自动切换记录</div>
+            </div>
+          </section>
         </div>
       </section>
 
