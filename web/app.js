@@ -47,6 +47,9 @@ const elements = {
   runtimeConnectionState: document.getElementById("runtimeConnectionState"),
   runtimeDimension: document.getElementById("runtimeDimension"),
   runtimeRangeLabel: document.getElementById("runtimeRangeLabel"),
+  runtimeAutoSwitchState: document.getElementById("runtimeAutoSwitchState"),
+  runtimeAutoSwitchMeta: document.getElementById("runtimeAutoSwitchMeta"),
+  settingsModal: document.getElementById("settingsModal"),
   settingsPanel: document.getElementById("settingsPanel"),
   settingsTitle: document.getElementById("settingsTitle"),
   settingsDescription: document.getElementById("settingsDescription"),
@@ -55,8 +58,10 @@ const elements = {
   settingsSecret: document.getElementById("settingsSecret"),
   settingsSaveBtn: document.getElementById("settingsSaveBtn"),
   settingsCancelBtn: document.getElementById("settingsCancelBtn"),
+  settingsCloseBtn: document.getElementById("settingsCloseBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
   autoSwitchBtn: document.getElementById("autoSwitchBtn"),
+  autoSwitchModal: document.getElementById("autoSwitchModal"),
   autoSwitchPanel: document.getElementById("autoSwitchPanel"),
   autoSwitchForm: document.getElementById("autoSwitchForm"),
   autoSwitchEnabled: document.getElementById("autoSwitchEnabled"),
@@ -67,6 +72,7 @@ const elements = {
   autoSwitchRefreshBtn: document.getElementById("autoSwitchRefreshBtn"),
   autoSwitchSaveBtn: document.getElementById("autoSwitchSaveBtn"),
   autoSwitchCancelBtn: document.getElementById("autoSwitchCancelBtn"),
+  autoSwitchCloseBtn: document.getElementById("autoSwitchCloseBtn"),
   autoSwitchGroupsBody: document.getElementById("autoSwitchGroupsBody"),
   autoSwitchEventsBody: document.getElementById("autoSwitchEventsBody"),
   dashboardShell: document.getElementById("dashboardShell"),
@@ -310,6 +316,8 @@ function syncContextSummary() {
   elements.runtimeConnectionState.textContent = state.mihomoSettings.url ? "已配置" : "待配置"
   elements.runtimeDimension.textContent = config.primaryTitle
   elements.runtimeRangeLabel.textContent = currentRangeLabel()
+  elements.runtimeAutoSwitchState.textContent = state.autoSwitch.enabled ? "已开启" : "未开启"
+  elements.runtimeAutoSwitchMeta.textContent = buildAutoSwitchSummary()
 
   if (!state.selectedPrimary) {
     elements.selectionPath.textContent = `当前维度为${config.countLabel}，等待选择主分组。`
@@ -322,6 +330,26 @@ function syncContextSummary() {
   }
 
   elements.selectionPath.textContent = `${config.countLabel} / ${state.selectedPrimary} / ${state.selectedSecondary}`
+}
+
+function buildAutoSwitchSummary() {
+  if (!state.mihomoSettings.url) return "连接 Mihomo 后可配置自动切换预案"
+  if (!state.autoSwitch.enabled) return "尚未启用自动切换预案"
+
+  const enabledGroups = state.autoSwitch.groups.filter((group) => group.enabled).length
+  const threshold = formatBytes(state.autoSwitch.thresholdBytesPerMinute || 0)
+  const cooldownMinutes = Math.max(0, Math.round(Number(state.autoSwitch.cooldownSeconds || 0) / 60))
+  const parts = [
+    `阈值 ${threshold}/分钟`,
+    `冷却 ${cooldownMinutes} 分钟`,
+    `策略组 ${enabledGroups} 个`,
+  ]
+
+  if (state.autoSwitch.restoreEnabled) {
+    parts.push(`自动恢复 ${Number(state.autoSwitch.restoreQuietMinutes || 0)} 分钟`)
+  }
+
+  return parts.join(" · ")
 }
 
 function updateViewHints() {
@@ -379,10 +407,12 @@ function syncSettingsForm() {
 
 function syncSettingsUI() {
   const panelVisible = state.settingsOpen || state.settingsRequired
-  elements.settingsPanel.classList.toggle("hidden", !panelVisible)
+  elements.settingsModal.classList.toggle("hidden", !panelVisible)
+  elements.settingsModal.setAttribute("aria-hidden", String(!panelVisible))
   elements.dashboardShell.classList.toggle("hidden", state.settingsRequired)
   elements.runtimeSummary.classList.toggle("hidden", state.settingsRequired)
   elements.settingsCancelBtn.classList.toggle("hidden", state.settingsRequired)
+  elements.settingsCloseBtn.classList.toggle("hidden", state.settingsRequired)
 
   if (state.settingsRequired) {
     elements.settingsTitle.textContent = "连接 Mihomo"
@@ -400,7 +430,8 @@ function syncSettingsUI() {
 }
 
 function syncAutoSwitchUI() {
-  elements.autoSwitchPanel.classList.toggle("hidden", !state.autoSwitchOpen)
+  elements.autoSwitchModal.classList.toggle("hidden", !state.autoSwitchOpen)
+  elements.autoSwitchModal.setAttribute("aria-hidden", String(!state.autoSwitchOpen))
 }
 
 function mergeAutoSwitchGroups(groups, groupTargets) {
@@ -532,18 +563,21 @@ async function loadAutoSwitchSettings() {
   state.autoSwitch.restoreEnabled = Boolean(settings.restoreEnabled)
   state.autoSwitch.restoreQuietMinutes = Number(settings.restoreQuietMinutes || 0)
   state.autoSwitch.groupTargets = Array.isArray(settings.groupTargets) ? settings.groupTargets : []
+  syncContextSummary()
 }
 
 async function loadAutoSwitchGroups() {
   if (!state.mihomoSettings.url) {
     state.autoSwitch.groups = []
     renderAutoSwitchGroups()
+    syncContextSummary()
     return
   }
 
   const groups = await fetchJSON("/api/auto-switch/groups")
   state.autoSwitch.groups = mergeAutoSwitchGroups(groups, state.autoSwitch.groupTargets)
   renderAutoSwitchGroups()
+  syncContextSummary()
 }
 
 async function loadAutoSwitchEvents() {
@@ -611,6 +645,12 @@ function closeAutoSwitchPanel() {
   syncAutoSwitchUI()
 }
 
+function handleModalClose(event) {
+  const type = event.target?.dataset?.modalClose
+  if (type === "settings" && !state.settingsRequired) closeSettingsPanel()
+  if (type === "auto-switch") closeAutoSwitchPanel()
+}
+
 async function saveSettings(event) {
   event.preventDefault()
 
@@ -670,6 +710,7 @@ async function saveAutoSwitchSettings(event) {
     state.autoSwitchOpen = false
     syncAutoSwitchForm()
     syncAutoSwitchUI()
+    syncContextSummary()
     setStatus("自动切换配置已保存")
   } catch (error) {
     console.error(error)
@@ -1170,9 +1211,13 @@ elements.dimensionTabs.forEach((button) => {
 elements.settingsBtn.addEventListener("click", openSettingsPanel)
 elements.settingsForm.addEventListener("submit", saveSettings)
 elements.settingsCancelBtn.addEventListener("click", closeSettingsPanel)
+elements.settingsCloseBtn.addEventListener("click", closeSettingsPanel)
+elements.settingsModal.addEventListener("click", handleModalClose)
 elements.autoSwitchBtn.addEventListener("click", openAutoSwitchPanel)
 elements.autoSwitchForm.addEventListener("submit", saveAutoSwitchSettings)
 elements.autoSwitchCancelBtn.addEventListener("click", closeAutoSwitchPanel)
+elements.autoSwitchCloseBtn.addEventListener("click", closeAutoSwitchPanel)
+elements.autoSwitchModal.addEventListener("click", handleModalClose)
 elements.autoSwitchRefreshBtn.addEventListener("click", async () => {
   elements.autoSwitchRefreshBtn.disabled = true
   setStatus("正在刷新可控策略组...")
@@ -1194,6 +1239,16 @@ elements.detailSearch.addEventListener("input", (event) => {
 })
 elements.trendCanvas.addEventListener("mousemove", showTrendTooltip)
 elements.trendCanvas.addEventListener("mouseleave", hideTrendTooltip)
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return
+  if (state.autoSwitchOpen) {
+    closeAutoSwitchPanel()
+    return
+  }
+  if (state.settingsOpen && !state.settingsRequired) {
+    closeSettingsPanel()
+  }
+})
 
 elements.tableBody.addEventListener("click", async (event) => {
   const row = event.target.closest("[data-primary]")

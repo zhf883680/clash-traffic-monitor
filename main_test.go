@@ -2755,7 +2755,10 @@ func TestEmbeddedIndexDisablesPeriodicAutoRefresh(t *testing.T) {
 	}
 	for _, want := range []string{
 		`id="autoSwitchBtn"`,
-		`id="autoSwitchPanel" class="panel auto-switch-panel hidden"`,
+		`id="autoSwitchModal"`,
+		`class="modal-shell hidden"`,
+		`id="autoSwitchPanel"`,
+		`class="panel auto-switch-panel modal-panel"`,
 		`id="autoSwitchCancelBtn"`,
 		`id="autoRestoreEnabled"`,
 		`id="autoRestoreQuietMinutes"`,

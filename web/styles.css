@@ -301,7 +301,7 @@ select {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -323,6 +323,77 @@ select {
 .summary-value {
   font-size: 16px;
   font-weight: 800;
+}
+
+.summary-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.modal-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.42);
+  backdrop-filter: blur(10px);
+}
+
+.modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(1180px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.24);
+}
+
+.modal-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--muted-strong);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.modal-close:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  box-shadow: 0 12px 24px rgba(95, 70, 255, 0.14);
+}
+
+.modal-close:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(95, 70, 255, 0.14);
 }
 
 .settings-panel {
@@ -1231,7 +1302,10 @@ th {
     grid-template-columns: 1fr;
   }
 
-  .summary-grid,
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .overview-grid,
   .dashboard {
     grid-template-columns: 1fr;
@@ -1344,6 +1418,15 @@ th {
 
   .detail-search {
     width: 100%;
+  }
+
+  .modal-shell {
+    padding: 12px;
+  }
+
+  .modal-panel {
+    width: min(100vw - 24px, 1180px);
+    max-height: calc(100vh - 24px);
   }
 
   .settings-form,

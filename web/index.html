@@ -80,136 +80,179 @@
             <span class="summary-key">时间范围</span>
             <strong id="runtimeRangeLabel" class="summary-value">最近 7 天</strong>
           </article>
+          <article class="summary-chip">
+            <span class="summary-key">自动切换</span>
+            <strong id="runtimeAutoSwitchState" class="summary-value">未开启</strong>
+            <span id="runtimeAutoSwitchMeta" class="summary-note">尚未启用自动切换预案</span>
+          </article>
         </div>
       </section>
 
-      <section id="settingsPanel" class="panel settings-panel hidden">
-        <div class="settings-layout">
-          <div class="settings-copy">
-            <div class="settings-eyebrow">Connection Setup</div>
-            <h2 id="settingsTitle" class="settings-title">连接 Mihomo</h2>
-            <p id="settingsDescription" class="settings-description">
-              首次使用前先填写 Mihomo Controller 地址和 Secret。保存后会立刻用于后续采集，并持久化到本地数据库。
-            </p>
-            <ul class="settings-meta">
-              <li>Docker 升级时如果环境变量里已有值，服务启动后会直接使用并保存。</li>
-              <li>后续在这里修改连接参数，无需重启页面。</li>
-              <li>如果 Mihomo 没有设置密钥，Secret 可以留空。</li>
-            </ul>
+      <div id="settingsModal" class="modal-shell hidden" aria-hidden="true">
+        <div class="modal-backdrop" data-modal-close="settings"></div>
+        <section
+          id="settingsPanel"
+          class="panel settings-panel modal-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settingsTitle"
+        >
+          <div class="modal-topbar">
+            <div class="summary-eyebrow">Connection Setup</div>
+            <button
+              id="settingsCloseBtn"
+              class="modal-close"
+              type="button"
+              aria-label="关闭连接设置弹窗"
+            >
+              ×
+            </button>
           </div>
-
-          <form id="settingsForm" class="settings-form">
-            <label class="settings-field">
-              <span>Mihomo URL</span>
-              <input
-                id="settingsUrl"
-                type="url"
-                placeholder="http://127.0.0.1:9090"
-                inputmode="url"
-                autocomplete="off"
-                required
-              />
-            </label>
-            <label class="settings-field">
-              <span>Secret</span>
-              <input
-                id="settingsSecret"
-                type="password"
-                placeholder="留空表示未设置"
-                autocomplete="off"
-              />
-            </label>
-            <div class="settings-actions">
-              <button id="settingsSaveBtn" class="toolbar-action primary" type="submit">
-                保存并连接
-              </button>
-              <button id="settingsCancelBtn" class="toolbar-action ghost hidden" type="button">
-                取消
-              </button>
+          <div class="settings-layout">
+            <div class="settings-copy">
+              <h2 id="settingsTitle" class="settings-title">连接 Mihomo</h2>
+              <p id="settingsDescription" class="settings-description">
+                首次使用前先填写 Mihomo Controller 地址和 Secret。保存后会立刻用于后续采集，并持久化到本地数据库。
+              </p>
+              <ul class="settings-meta">
+                <li>Docker 升级时如果环境变量里已有值，服务启动后会直接使用并保存。</li>
+                <li>后续在这里修改连接参数，无需重启页面。</li>
+                <li>如果 Mihomo 没有设置密钥，Secret 可以留空。</li>
+              </ul>
             </div>
-            <div class="settings-tip">
-              启动时如果传入了 `MIHOMO_URL` 或 `MIHOMO_SECRET`，重启后仍会优先使用环境变量，并覆盖这里保存的值。
-            </div>
-          </form>
-        </div>
-      </section>
 
-      <section id="autoSwitchPanel" class="panel auto-switch-panel hidden">
-        <div class="panel-head auto-switch-head">
-          <div>
+            <form id="settingsForm" class="settings-form">
+              <label class="settings-field">
+                <span>Mihomo URL</span>
+                <input
+                  id="settingsUrl"
+                  type="url"
+                  placeholder="http://127.0.0.1:9090"
+                  inputmode="url"
+                  autocomplete="off"
+                  required
+                />
+              </label>
+              <label class="settings-field">
+                <span>Secret</span>
+                <input
+                  id="settingsSecret"
+                  type="password"
+                  placeholder="留空表示未设置"
+                  autocomplete="off"
+                />
+              </label>
+              <div class="settings-actions">
+                <button id="settingsSaveBtn" class="toolbar-action primary" type="submit">
+                  保存并连接
+                </button>
+                <button id="settingsCancelBtn" class="toolbar-action ghost hidden" type="button">
+                  取消
+                </button>
+              </div>
+              <div class="settings-tip">
+                启动时如果传入了 `MIHOMO_URL` 或 `MIHOMO_SECRET`，重启后仍会优先使用环境变量，并覆盖这里保存的值。
+              </div>
+            </form>
+          </div>
+        </section>
+      </div>
+
+      <div id="autoSwitchModal" class="modal-shell hidden" aria-hidden="true">
+        <div class="modal-backdrop" data-modal-close="auto-switch"></div>
+        <section
+          id="autoSwitchPanel"
+          class="panel auto-switch-panel modal-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="autoSwitchTitle"
+        >
+          <div class="modal-topbar">
             <div class="summary-eyebrow">Auto Switch</div>
-            <h2 class="panel-title">大流量自动切换预案(beta)</h2>
+            <button
+              id="autoSwitchCloseBtn"
+              class="modal-close"
+              type="button"
+              aria-label="关闭自动切换弹窗"
+            >
+              ×
+            </button>
           </div>
-          <button id="autoSwitchRefreshBtn" class="toolbar-action ghost" type="button">
-            刷新策略组
-          </button>
-        </div>
+          <div class="panel-head auto-switch-head">
+            <div>
+              <h2 id="autoSwitchTitle" class="panel-title">大流量自动切换预案(beta)</h2>
+            </div>
+            <button id="autoSwitchRefreshBtn" class="toolbar-action ghost" type="button">
+              刷新策略组
+            </button>
+          </div>
 
-        <div class="auto-switch-layout">
-          <form id="autoSwitchForm" class="auto-switch-form">
-            <div class="auto-switch-grid">
-              <label class="settings-field checkbox-field">
-                <span>启用自动切换</span>
-                <input id="autoSwitchEnabled" type="checkbox" />
-              </label>
-              <label class="settings-field checkbox-field">
-                <span>自动恢复原节点</span>
-                <input id="autoRestoreEnabled" type="checkbox" />
-              </label>
-              <label class="settings-field">
-                <span>1 分钟阈值（MB）</span>
-                <input id="autoSwitchThreshold" type="number" min="1" step="1" placeholder="例如 512" />
-              </label>
-              <label class="settings-field">
-                <span>冷却时间（分钟）</span>
-                <input id="autoSwitchCooldown" type="number" min="0" step="1" placeholder="例如 10" />
-              </label>
-              <label class="settings-field">
-                <span>静默恢复时间（分钟）</span>
-                <input id="autoRestoreQuietMinutes" type="number" min="0" step="1" placeholder="例如 15" />
-              </label>
-            </div>
+          <div class="auto-switch-layout">
+            <form id="autoSwitchForm" class="auto-switch-form">
+              <div class="auto-switch-grid">
+                <label class="settings-field checkbox-field">
+                  <span>启用自动切换</span>
+                  <input id="autoSwitchEnabled" type="checkbox" />
+                </label>
+                <label class="settings-field checkbox-field">
+                  <span>自动恢复原节点</span>
+                  <input id="autoRestoreEnabled" type="checkbox" />
+                </label>
+                <label class="settings-field">
+                  <span>1 分钟阈值（MB）</span>
+                  <input id="autoSwitchThreshold" type="number" min="1" step="1" placeholder="例如 512" />
+                </label>
+                <label class="settings-field">
+                  <span>冷却时间（分钟）</span>
+                  <input id="autoSwitchCooldown" type="number" min="0" step="1" placeholder="例如 10" />
+                </label>
+                <label class="settings-field">
+                  <span>静默恢复时间（分钟）</span>
+                  <input id="autoRestoreQuietMinutes" type="number" min="0" step="1" placeholder="例如 15" />
+                </label>
+              </div>
 
-            <div class="auto-switch-table-wrap">
-              <table class="compact-table auto-switch-table">
-                <thead>
-                  <tr>
-                    <th>启用</th>
-                    <th>策略组</th>
-                    <th>类型</th>
-                    <th>当前节点</th>
-                    <th>目标节点</th>
-                  </tr>
-                </thead>
-                <tbody id="autoSwitchGroupsBody">
-                  <tr>
-                    <td colspan="5" class="empty">连接 Mihomo 后加载可控策略组</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+              <div class="auto-switch-table-wrap">
+                <table class="compact-table auto-switch-table">
+                  <thead>
+                    <tr>
+                      <th>启用</th>
+                      <th>策略组</th>
+                      <th>类型</th>
+                      <th>当前节点</th>
+                      <th>目标节点</th>
+                    </tr>
+                  </thead>
+                  <tbody id="autoSwitchGroupsBody">
+                    <tr>
+                      <td colspan="5" class="empty">连接 Mihomo 后加载可控策略组</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
 
-            <div class="settings-actions">
-              <button id="autoSwitchSaveBtn" class="toolbar-action primary" type="submit">
-                保存自动切换配置
-              </button>
-              <button id="autoSwitchCancelBtn" class="toolbar-action ghost" type="button">
-                取消
-              </button>
-            </div>
-          </form>
+              <div class="settings-actions">
+                <button id="autoSwitchSaveBtn" class="toolbar-action primary" type="submit">
+                  保存自动切换配置
+                </button>
+                <button id="autoSwitchCancelBtn" class="toolbar-action ghost" type="button">
+                  取消
+                </button>
+              </div>
+            </form>
 
-          <section class="auto-switch-events">
-            <div class="auto-switch-events-head">
-              <h3>最近触发记录</h3>
-              <p>记录命中的域名、分钟累计流量和每个策略组的执行结果。</p>
-            </div>
-            <div id="autoSwitchEventsBody" class="auto-switch-events-list">
-              <div class="detail-empty">当前还没有自动切换记录</div>
-            </div>
-          </section>
-        </div>
-      </section>
+            <section class="auto-switch-events">
+              <div class="auto-switch-events-head">
+                <h3>最近触发记录</h3>
+                <p>记录命中的域名、分钟累计流量和每个策略组的执行结果。</p>
+              </div>
+              <div id="autoSwitchEventsBody" class="auto-switch-events-list">
+                <div class="detail-empty">当前还没有自动切换记录</div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
 
       <div id="dashboardShell" class="dashboard-shell">
         <section id="overviewSection" class="overview-grid" data-region="overview">
