@@ -794,7 +794,7 @@ func TestProcessConnectionsAutoSwitchTriggersOncePerMinute(t *testing.T) {
 	if putCount != 1 {
 		t.Fatalf("expected exactly 1 switch request, got %d", putCount)
 	}
-	if got := svc.hostMinuteWindows["video.example"]; got == nil || got.TotalBytes != 500 {
+	if got := svc.hostMinuteWindows["video.example\x00🌍 国外媒体"]; got == nil || got.TotalBytes != 500 {
 		t.Fatalf("expected minute window total 500, got %+v", got)
 	}
 
@@ -810,6 +810,204 @@ func TestProcessConnectionsAutoSwitchTriggersOncePerMinute(t *testing.T) {
 	}
 	if len(events[0].Results) != 1 || events[0].Results[0].Status != "switched" {
 		t.Fatalf("unexpected event results: %+v", events[0].Results)
+	}
+}
+
+func TestAutoSwitchOnlySwitchesTriggeredEnabledGroup(t *testing.T) {
+	svc := newTestService(t)
+
+	if err := saveAutoSwitchSettings(svc.db, autoSwitchSettings{
+		Enabled:                 true,
+		ThresholdBytesPerMinute: 300,
+		CooldownSeconds:         0,
+		GroupTargets: []autoSwitchGroupTarget{
+			{GroupName: "🌍 国外媒体", TargetProxy: "🇸🇬 Singapore", Enabled: true},
+			{GroupName: "🐟 漏网之鱼", TargetProxy: "DIRECT", Enabled: true},
+		},
+	}); err != nil {
+		t.Fatalf("saveAutoSwitchSettings: %v", err)
+	}
+
+	svc.setMihomoSettings(mihomoSettings{URL: "http://127.0.0.1:9090"})
+	currentTime := time.Date(2026, 4, 28, 12, 0, 10, 0, time.Local)
+	svc.now = func() time.Time { return currentTime }
+
+	switches := make([]string, 0, 2)
+	svc.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.Method == http.MethodGet && req.URL.Path == "/proxies":
+				body := `{"proxies":{
+					"🌍 国外媒体":{"type":"Selector","all":["🚩 PROXY","🇸🇬 Singapore"],"now":"🚩 PROXY"},
+					"🐟 漏网之鱼":{"type":"Selector","all":["DIRECT","🚩 PROXY"],"now":"🚩 PROXY"}
+				}}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+				}, nil
+			case req.Method == http.MethodPut:
+				switches = append(switches, req.URL.Path)
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	first := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-1",
+			Upload:   100,
+			Download: 100,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.2", Host: "video.example", DestinationIP: "1.1.1.1", Process: "chrome"},
+		}},
+	}
+	second := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-1",
+			Upload:   250,
+			Download: 150,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.2", Host: "video.example", DestinationIP: "1.1.1.1", Process: "chrome"},
+		}},
+	}
+
+	if err := svc.processConnections(first); err != nil {
+		t.Fatalf("processConnections first: %v", err)
+	}
+	if err := svc.processConnections(second); err != nil {
+		t.Fatalf("processConnections second: %v", err)
+	}
+
+	if len(switches) != 1 {
+		t.Fatalf("expected exactly 1 switch request, got %d (%v)", len(switches), switches)
+	}
+	if switches[0] != "/proxies/🌍 国外媒体" {
+		t.Fatalf("expected only triggered group to switch, got %v", switches)
+	}
+
+	events, err := listAutoSwitchEvents(svc.db, 10)
+	if err != nil {
+		t.Fatalf("listAutoSwitchEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 auto switch event, got %d", len(events))
+	}
+	if len(events[0].Results) != 1 || events[0].Results[0].GroupName != "🌍 国外媒体" {
+		t.Fatalf("expected event to contain only triggered group result, got %+v", events[0].Results)
+	}
+}
+
+func TestAutoSwitchIgnoresTrafficForGroupsNotEnabledInSettings(t *testing.T) {
+	svc := newTestService(t)
+
+	if err := saveAutoSwitchSettings(svc.db, autoSwitchSettings{
+		Enabled:                 true,
+		ThresholdBytesPerMinute: 300,
+		CooldownSeconds:         0,
+		GroupTargets: []autoSwitchGroupTarget{
+			{GroupName: "🌍 国外媒体", TargetProxy: "🇸🇬 Singapore", Enabled: false},
+			{GroupName: "🐟 漏网之鱼", TargetProxy: "DIRECT", Enabled: true},
+		},
+	}); err != nil {
+		t.Fatalf("saveAutoSwitchSettings: %v", err)
+	}
+
+	svc.setMihomoSettings(mihomoSettings{URL: "http://127.0.0.1:9090"})
+	currentTime := time.Date(2026, 4, 28, 12, 0, 10, 0, time.Local)
+	svc.now = func() time.Time { return currentTime }
+
+	var putCount int
+	svc.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.Method == http.MethodGet && req.URL.Path == "/proxies":
+				body := `{"proxies":{
+					"🌍 国外媒体":{"type":"Selector","all":["🚩 PROXY","🇸🇬 Singapore"],"now":"🚩 PROXY"},
+					"🐟 漏网之鱼":{"type":"Selector","all":["DIRECT","🚩 PROXY"],"now":"🚩 PROXY"}
+				}}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+				}, nil
+			case req.Method == http.MethodPut:
+				putCount++
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	first := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-1",
+			Upload:   100,
+			Download: 100,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.2", Host: "video.example", DestinationIP: "1.1.1.1", Process: "chrome"},
+		}},
+	}
+	second := &connectionsResponse{
+		Connections: []connection{{
+			ID:       "conn-1",
+			Upload:   250,
+			Download: 150,
+			Chains:   []string{"🌍 国外媒体"},
+			Metadata: struct {
+				SourceIP      string "json:\"sourceIP\""
+				Host          string "json:\"host\""
+				DestinationIP string "json:\"destinationIP\""
+				Process       string "json:\"process\""
+			}{SourceIP: "192.168.1.2", Host: "video.example", DestinationIP: "1.1.1.1", Process: "chrome"},
+		}},
+	}
+
+	if err := svc.processConnections(first); err != nil {
+		t.Fatalf("processConnections first: %v", err)
+	}
+	if err := svc.processConnections(second); err != nil {
+		t.Fatalf("processConnections second: %v", err)
+	}
+
+	if putCount != 0 {
+		t.Fatalf("expected no switch request for disabled triggered group, got %d", putCount)
+	}
+
+	events, err := listAutoSwitchEvents(svc.db, 10)
+	if err != nil {
+		t.Fatalf("listAutoSwitchEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no auto switch events, got %+v", events)
 	}
 }
 

@@ -1122,7 +1122,17 @@ func (s *service) evaluateAutoSwitch(logs []trafficLog, nowMS int64) error {
 		return nil
 	}
 
-	triggerHost, triggerTotal, bucketStart, bucketEnd := s.updateHostMinuteWindows(logs, nowMS, settings.ThresholdBytesPerMinute)
+	enabledTargets := enabledAutoSwitchTargets(settings)
+	if len(enabledTargets) == 0 {
+		return nil
+	}
+
+	triggerHost, triggerGroup, triggerTotal, bucketStart, bucketEnd := s.updateHostMinuteWindows(
+		logs,
+		nowMS,
+		settings.ThresholdBytesPerMinute,
+		enabledTargets,
+	)
 	if triggerHost == "" {
 		return nil
 	}
@@ -1131,7 +1141,7 @@ func (s *service) evaluateAutoSwitch(logs []trafficLog, nowMS int64) error {
 		return nil
 	}
 
-	results, execErr := s.executeAutoSwitch(settings, nowMS, triggerHost, triggerTotal)
+	results, execErr := s.executeAutoSwitch(settings, enabledTargets[triggerGroup], nowMS, triggerHost, triggerTotal)
 	event := autoSwitchEvent{
 		TriggeredAt: nowMS,
 		Host:        triggerHost,
@@ -1154,11 +1164,31 @@ func (s *service) evaluateAutoSwitch(logs []trafficLog, nowMS int64) error {
 	return execErr
 }
 
-func (s *service) updateHostMinuteWindows(logs []trafficLog, nowMS int64, threshold int64) (string, int64, int64, int64) {
+func enabledAutoSwitchTargets(settings autoSwitchSettings) map[string]autoSwitchGroupTarget {
+	targets := make(map[string]autoSwitchGroupTarget, len(settings.GroupTargets))
+	for _, target := range settings.GroupTargets {
+		if !target.Enabled {
+			continue
+		}
+		groupName := strings.TrimSpace(target.GroupName)
+		if groupName == "" {
+			continue
+		}
+		targets[groupName] = target
+	}
+	return targets
+}
+
+func (s *service) updateHostMinuteWindows(
+	logs []trafficLog,
+	nowMS int64,
+	threshold int64,
+	enabledTargets map[string]autoSwitchGroupTarget,
+) (string, string, int64, int64, int64) {
 	bucketStart := (nowMS / 60000) * 60000
 	bucketEnd := bucketStart + 60000
 	if threshold <= 0 {
-		return "", 0, bucketStart, bucketEnd
+		return "", "", 0, bucketStart, bucketEnd
 	}
 
 	s.mu.Lock()
@@ -1174,23 +1204,29 @@ func (s *service) updateHostMinuteWindows(logs []trafficLog, nowMS int64, thresh
 			continue
 		}
 
-		window := s.hostMinuteWindows[entry.Host]
+		target, ok := enabledTargets[strings.TrimSpace(entry.Outbound)]
+		if !ok {
+			continue
+		}
+
+		windowKey := fmt.Sprintf("%s\x00%s", entry.Host, target.GroupName)
+		window := s.hostMinuteWindows[windowKey]
 		if window == nil || window.BucketStart != bucketStart {
 			window = &hostTrafficWindow{
 				BucketStart: bucketStart,
 				BucketEnd:   bucketEnd,
 			}
-			s.hostMinuteWindows[entry.Host] = window
+			s.hostMinuteWindows[windowKey] = window
 		}
 
 		previousTotal := window.TotalBytes
 		window.TotalBytes += total
 		if previousTotal < threshold && window.TotalBytes >= threshold && s.lastAutoSwitchMin != bucketStart {
-			return entry.Host, window.TotalBytes, bucketStart, bucketEnd
+			return entry.Host, target.GroupName, window.TotalBytes, bucketStart, bucketEnd
 		}
 	}
 
-	return "", 0, bucketStart, bucketEnd
+	return "", "", 0, bucketStart, bucketEnd
 }
 
 func (s *service) isAutoSwitchSuppressed(bucketStart, nowMS, cooldownSeconds int64) bool {
@@ -1206,7 +1242,13 @@ func (s *service) isAutoSwitchSuppressed(bucketStart, nowMS, cooldownSeconds int
 	return false
 }
 
-func (s *service) executeAutoSwitch(settings autoSwitchSettings, triggeredAt int64, triggerHost string, triggerTotal int64) ([]autoSwitchExecutionResult, error) {
+func (s *service) executeAutoSwitch(
+	settings autoSwitchSettings,
+	target autoSwitchGroupTarget,
+	triggeredAt int64,
+	triggerHost string,
+	triggerTotal int64,
+) ([]autoSwitchExecutionResult, error) {
 	mihomo := s.currentMihomoSettings()
 	groups, err := s.listControllableProxyGroups(mihomo)
 	if err != nil {
@@ -1218,78 +1260,72 @@ func (s *service) executeAutoSwitch(settings autoSwitchSettings, triggeredAt int
 		groupByName[group.Name] = group
 	}
 
-	results := make([]autoSwitchExecutionResult, 0, len(settings.GroupTargets))
-	for _, target := range settings.GroupTargets {
-		if !target.Enabled {
-			continue
-		}
-
-		group, ok := groupByName[target.GroupName]
-		if !ok {
-			results = append(results, autoSwitchExecutionResult{
-				GroupName:   target.GroupName,
-				TargetProxy: target.TargetProxy,
-				Status:      "error",
-				Message:     "group not found",
-			})
-			continue
-		}
-
-		session, hasSession, err := getAutoRestoreSession(s.db, target.GroupName)
-		if err != nil {
-			return results, err
-		}
-
-		if group.Now == target.TargetProxy {
-			results = append(results, autoSwitchExecutionResult{
-				GroupName:   target.GroupName,
-				TargetProxy: target.TargetProxy,
-				Status:      "skipped",
-				Message:     "already selected",
-			})
-			if settings.RestoreEnabled && settings.RestoreQuietMinutes > 0 && hasSession {
-				session.CurrentProxy = target.TargetProxy
-				session.LastTriggeredAt = triggeredAt
-				session.LastTriggeredHost = triggerHost
-				session.LastTriggeredBytes = triggerTotal
-				if err := upsertAutoRestoreSession(s.db, session); err != nil {
-					return results, err
-				}
-			}
-			continue
-		}
-
-		if err := s.switchProxyGroup(mihomo, group, target.TargetProxy); err != nil {
-			results = append(results, autoSwitchExecutionResult{
-				GroupName:   target.GroupName,
-				TargetProxy: target.TargetProxy,
-				Status:      "error",
-				Message:     err.Error(),
-			})
-			continue
-		}
-
+	results := make([]autoSwitchExecutionResult, 0, 1)
+	group, ok := groupByName[target.GroupName]
+	if !ok {
 		results = append(results, autoSwitchExecutionResult{
 			GroupName:   target.GroupName,
 			TargetProxy: target.TargetProxy,
-			Status:      "switched",
+			Status:      "error",
+			Message:     "group not found",
 		})
+		return results, nil
+	}
 
-		if settings.RestoreEnabled && settings.RestoreQuietMinutes > 0 {
-			originalProxy := group.Now
-			if hasSession && strings.TrimSpace(session.OriginalProxy) != "" {
-				originalProxy = session.OriginalProxy
-			}
-			if err := upsertAutoRestoreSession(s.db, autoRestoreSession{
-				GroupName:          target.GroupName,
-				OriginalProxy:      originalProxy,
-				CurrentProxy:       target.TargetProxy,
-				LastTriggeredAt:    triggeredAt,
-				LastTriggeredHost:  triggerHost,
-				LastTriggeredBytes: triggerTotal,
-			}); err != nil {
+	session, hasSession, err := getAutoRestoreSession(s.db, target.GroupName)
+	if err != nil {
+		return results, err
+	}
+
+	if group.Now == target.TargetProxy {
+		results = append(results, autoSwitchExecutionResult{
+			GroupName:   target.GroupName,
+			TargetProxy: target.TargetProxy,
+			Status:      "skipped",
+			Message:     "already selected",
+		})
+		if settings.RestoreEnabled && settings.RestoreQuietMinutes > 0 && hasSession {
+			session.CurrentProxy = target.TargetProxy
+			session.LastTriggeredAt = triggeredAt
+			session.LastTriggeredHost = triggerHost
+			session.LastTriggeredBytes = triggerTotal
+			if err := upsertAutoRestoreSession(s.db, session); err != nil {
 				return results, err
 			}
+		}
+		return results, nil
+	}
+
+	if err := s.switchProxyGroup(mihomo, group, target.TargetProxy); err != nil {
+		results = append(results, autoSwitchExecutionResult{
+			GroupName:   target.GroupName,
+			TargetProxy: target.TargetProxy,
+			Status:      "error",
+			Message:     err.Error(),
+		})
+		return results, nil
+	}
+
+	results = append(results, autoSwitchExecutionResult{
+		GroupName:   target.GroupName,
+		TargetProxy: target.TargetProxy,
+		Status:      "switched",
+	})
+
+	if settings.RestoreEnabled && settings.RestoreQuietMinutes > 0 {
+		originalProxy := group.Now
+		if hasSession && strings.TrimSpace(session.OriginalProxy) != "" {
+			originalProxy = session.OriginalProxy
+		}
+		if err := upsertAutoRestoreSession(s.db, autoRestoreSession{
+			GroupName:          target.GroupName,
+			OriginalProxy:      originalProxy,
+			CurrentProxy:       target.TargetProxy,
+			LastTriggeredAt:    triggeredAt,
+			LastTriggeredHost:  triggerHost,
+			LastTriggeredBytes: triggerTotal,
+		}); err != nil {
+			return results, err
 		}
 	}
 
