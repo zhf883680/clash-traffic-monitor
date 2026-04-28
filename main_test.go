@@ -271,8 +271,144 @@ func TestLoadAutoSwitchSettingsDefaults(t *testing.T) {
 	if got.CooldownSeconds != 0 {
 		t.Fatalf("expected zero cooldown by default, got %d", got.CooldownSeconds)
 	}
+	if got.RestoreEnabled {
+		t.Fatalf("expected auto restore to default disabled")
+	}
+	if got.RestoreQuietMinutes != 0 {
+		t.Fatalf("expected zero restore quiet minutes by default, got %d", got.RestoreQuietMinutes)
+	}
 	if len(got.GroupTargets) != 0 {
 		t.Fatalf("expected no group targets by default, got %d", len(got.GroupTargets))
+	}
+}
+
+func TestAutoRestoreSettingsRoundTrip(t *testing.T) {
+	svc := newTestService(t)
+
+	want := autoSwitchSettings{
+		Enabled:                 true,
+		ThresholdBytesPerMinute: 512 * 1024 * 1024,
+		CooldownSeconds:         900,
+		RestoreEnabled:          true,
+		RestoreQuietMinutes:     15,
+		GroupTargets: []autoSwitchGroupTarget{
+			{GroupName: "🌍 国外媒体", TargetProxy: "🇸🇬 Singapore", Enabled: true},
+		},
+	}
+
+	if err := saveAutoSwitchSettings(svc.db, want); err != nil {
+		t.Fatalf("saveAutoSwitchSettings: %v", err)
+	}
+
+	got, err := loadAutoSwitchSettings(svc.db)
+	if err != nil {
+		t.Fatalf("loadAutoSwitchSettings: %v", err)
+	}
+
+	if got.RestoreEnabled != want.RestoreEnabled {
+		t.Fatalf("expected restore enabled %v, got %v", want.RestoreEnabled, got.RestoreEnabled)
+	}
+	if got.RestoreQuietMinutes != want.RestoreQuietMinutes {
+		t.Fatalf("expected restore quiet minutes %d, got %d", want.RestoreQuietMinutes, got.RestoreQuietMinutes)
+	}
+}
+
+func TestRestoreSessionPersistenceRoundTrip(t *testing.T) {
+	svc := newTestService(t)
+
+	session := autoRestoreSession{
+		GroupName:          "🌍 国外媒体",
+		OriginalProxy:      "🚩 PROXY",
+		CurrentProxy:       "🇸🇬 Singapore",
+		LastTriggeredAt:    1_700_000_000_000,
+		LastTriggeredHost:  "video.example",
+		LastTriggeredBytes: 536_870_912,
+	}
+
+	if err := upsertAutoRestoreSession(svc.db, session); err != nil {
+		t.Fatalf("upsertAutoRestoreSession insert: %v", err)
+	}
+
+	got, err := listAutoRestoreSessions(svc.db)
+	if err != nil {
+		t.Fatalf("listAutoRestoreSessions: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 restore session, got %d", len(got))
+	}
+	if got[0] != session {
+		t.Fatalf("unexpected restore session: got %+v want %+v", got[0], session)
+	}
+
+	session.CurrentProxy = "🇯🇵 Japan"
+	session.LastTriggeredAt = 1_700_000_060_000
+	session.LastTriggeredHost = "download.example"
+	session.LastTriggeredBytes = 900_000_000
+	if err := upsertAutoRestoreSession(svc.db, session); err != nil {
+		t.Fatalf("upsertAutoRestoreSession update: %v", err)
+	}
+
+	got, err = listAutoRestoreSessions(svc.db)
+	if err != nil {
+		t.Fatalf("listAutoRestoreSessions after update: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 restore session after update, got %d", len(got))
+	}
+	if got[0] != session {
+		t.Fatalf("unexpected updated restore session: got %+v want %+v", got[0], session)
+	}
+
+	if err := deleteAutoRestoreSession(svc.db, session.GroupName); err != nil {
+		t.Fatalf("deleteAutoRestoreSession: %v", err)
+	}
+
+	got, err = listAutoRestoreSessions(svc.db)
+	if err != nil {
+		t.Fatalf("listAutoRestoreSessions after delete: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no restore sessions after delete, got %d", len(got))
+	}
+}
+
+func TestRestoreSessionReloadAfterDatabaseReopen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "traffic.db")
+	db, err := openDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("openDatabase initial: %v", err)
+	}
+
+	session := autoRestoreSession{
+		GroupName:          "🌍 国外媒体",
+		OriginalProxy:      "🚩 PROXY",
+		CurrentProxy:       "🇸🇬 Singapore",
+		LastTriggeredAt:    1_700_000_000_000,
+		LastTriggeredHost:  "video.example",
+		LastTriggeredBytes: 536_870_912,
+	}
+	if err := upsertAutoRestoreSession(db, session); err != nil {
+		t.Fatalf("upsertAutoRestoreSession: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close initial db: %v", err)
+	}
+
+	reopened, err := openDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("openDatabase reopen: %v", err)
+	}
+	defer reopened.Close()
+
+	got, err := listAutoRestoreSessions(reopened)
+	if err != nil {
+		t.Fatalf("listAutoRestoreSessions reopened: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 restore session after reopen, got %d", len(got))
+	}
+	if got[0] != session {
+		t.Fatalf("unexpected reopened restore session: got %+v want %+v", got[0], session)
 	}
 }
 

@@ -55,6 +55,8 @@ type autoSwitchSettings struct {
 	Enabled                 bool                    `json:"enabled"`
 	ThresholdBytesPerMinute int64                   `json:"thresholdBytesPerMinute"`
 	CooldownSeconds         int64                   `json:"cooldownSeconds"`
+	RestoreEnabled          bool                    `json:"restoreEnabled"`
+	RestoreQuietMinutes     int64                   `json:"restoreQuietMinutes"`
 	GroupTargets            []autoSwitchGroupTarget `json:"groupTargets"`
 }
 
@@ -80,6 +82,15 @@ type autoSwitchEvent struct {
 	WindowEnd   int64                       `json:"windowEnd"`
 	Results     []autoSwitchExecutionResult `json:"results"`
 	Error       string                      `json:"error"`
+}
+
+type autoRestoreSession struct {
+	GroupName          string `json:"groupName"`
+	OriginalProxy      string `json:"originalProxy"`
+	CurrentProxy       string `json:"currentProxy"`
+	LastTriggeredAt    int64  `json:"lastTriggeredAt"`
+	LastTriggeredHost  string `json:"lastTriggeredHost"`
+	LastTriggeredBytes int64  `json:"lastTriggeredBytes"`
 }
 
 type controllableProxyGroup struct {
@@ -360,6 +371,15 @@ func openDatabase(path string) (*sql.DB, error) {
 		error TEXT NOT NULL DEFAULT ''
 	);
 
+	CREATE TABLE IF NOT EXISTS auto_restore_sessions (
+		group_name TEXT PRIMARY KEY,
+		original_proxy TEXT NOT NULL,
+		current_proxy TEXT NOT NULL,
+		last_triggered_at INTEGER NOT NULL,
+		last_triggered_host TEXT NOT NULL DEFAULT '',
+		last_triggered_bytes INTEGER NOT NULL DEFAULT 0
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_auto_switch_events_triggered_at ON auto_switch_events(triggered_at DESC);
 	`
 
@@ -476,7 +496,13 @@ func loadAutoSwitchSettings(db *sql.DB) (autoSwitchSettings, error) {
 	rows, err := db.Query(`
 		SELECT key, value
 		FROM app_settings
-		WHERE key IN ('auto_switch_enabled', 'auto_switch_threshold_bytes_per_minute', 'auto_switch_cooldown_seconds')
+		WHERE key IN (
+			'auto_switch_enabled',
+			'auto_switch_threshold_bytes_per_minute',
+			'auto_switch_cooldown_seconds',
+			'auto_restore_enabled',
+			'auto_restore_quiet_minutes'
+		)
 	`)
 	if err != nil {
 		return autoSwitchSettings{}, err
@@ -501,6 +527,13 @@ func loadAutoSwitchSettings(db *sql.DB) (autoSwitchSettings, error) {
 			}
 		case "auto_switch_cooldown_seconds":
 			settings.CooldownSeconds, err = strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return autoSwitchSettings{}, err
+			}
+		case "auto_restore_enabled":
+			settings.RestoreEnabled = value == "1"
+		case "auto_restore_quiet_minutes":
+			settings.RestoreQuietMinutes, err = strconv.ParseInt(value, 10, 64)
 			if err != nil {
 				return autoSwitchSettings{}, err
 			}
@@ -546,9 +579,14 @@ func saveAutoSwitchSettings(db *sql.DB, settings autoSwitchSettings) error {
 		"auto_switch_enabled":                    "0",
 		"auto_switch_threshold_bytes_per_minute": strconv.FormatInt(settings.ThresholdBytesPerMinute, 10),
 		"auto_switch_cooldown_seconds":           strconv.FormatInt(settings.CooldownSeconds, 10),
+		"auto_restore_enabled":                   "0",
+		"auto_restore_quiet_minutes":             strconv.FormatInt(settings.RestoreQuietMinutes, 10),
 	}
 	if settings.Enabled {
 		values["auto_switch_enabled"] = "1"
+	}
+	if settings.RestoreEnabled {
+		values["auto_restore_enabled"] = "1"
 	}
 
 	for key, value := range values {
@@ -602,6 +640,56 @@ func insertAutoSwitchEvent(db *sql.DB, event autoSwitchEvent) error {
 		(triggered_at, host, total_bytes, window_start, window_end, results_json, error)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, event.TriggeredAt, event.Host, event.TotalBytes, event.WindowStart, event.WindowEnd, string(resultsJSON), event.Error)
+	return err
+}
+
+func upsertAutoRestoreSession(db *sql.DB, session autoRestoreSession) error {
+	_, err := db.Exec(`
+		INSERT INTO auto_restore_sessions
+		(group_name, original_proxy, current_proxy, last_triggered_at, last_triggered_host, last_triggered_bytes)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(group_name) DO UPDATE SET
+			original_proxy = excluded.original_proxy,
+			current_proxy = excluded.current_proxy,
+			last_triggered_at = excluded.last_triggered_at,
+			last_triggered_host = excluded.last_triggered_host,
+			last_triggered_bytes = excluded.last_triggered_bytes
+	`, session.GroupName, session.OriginalProxy, session.CurrentProxy, session.LastTriggeredAt, session.LastTriggeredHost, session.LastTriggeredBytes)
+	return err
+}
+
+func listAutoRestoreSessions(db *sql.DB) ([]autoRestoreSession, error) {
+	rows, err := db.Query(`
+		SELECT group_name, original_proxy, current_proxy, last_triggered_at, last_triggered_host, last_triggered_bytes
+		FROM auto_restore_sessions
+		ORDER BY group_name ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessions := make([]autoRestoreSession, 0)
+	for rows.Next() {
+		var session autoRestoreSession
+		if err := rows.Scan(
+			&session.GroupName,
+			&session.OriginalProxy,
+			&session.CurrentProxy,
+			&session.LastTriggeredAt,
+			&session.LastTriggeredHost,
+			&session.LastTriggeredBytes,
+		); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+
+	return sessions, rows.Err()
+}
+
+func deleteAutoRestoreSession(db *sql.DB, groupName string) error {
+	_, err := db.Exec(`DELETE FROM auto_restore_sessions WHERE group_name = ?`, groupName)
 	return err
 }
 
