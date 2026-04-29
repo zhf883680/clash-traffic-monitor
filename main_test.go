@@ -3240,3 +3240,116 @@ func TestNormalizeHost(t *testing.T) {
 		}
 	}
 }
+
+func TestGroupHostRows(t *testing.T) {
+	rows := []aggregatedData{
+		{Label: "r1---sn-abc.googlevideo.com", Upload: 100, Download: 200, Total: 300, Count: 1},
+		{Label: "r4---sn-xyz.googlevideo.com", Upload: 50, Download: 80, Total: 130, Count: 2},
+		{Label: "www.youtube.com", Upload: 10, Download: 20, Total: 30, Count: 1},
+		{Label: "91.108.56.111", Upload: 5, Download: 5, Total: 10, Count: 1},
+	}
+	got := groupHostRows(rows)
+
+	byLabel := make(map[string]aggregatedData, len(got))
+	for _, r := range got {
+		byLabel[r.Label] = r
+	}
+
+	gv, ok := byLabel["googlevideo.com"]
+	if !ok {
+		t.Fatal("expected googlevideo.com in result")
+	}
+	if gv.Upload != 150 || gv.Download != 280 || gv.Total != 430 || gv.Count != 3 {
+		t.Errorf("googlevideo.com unexpected: %+v", gv)
+	}
+
+	yt, ok := byLabel["youtube.com"]
+	if !ok {
+		t.Fatal("expected youtube.com in result")
+	}
+	if yt.Upload != 10 || yt.Download != 20 || yt.Total != 30 {
+		t.Errorf("youtube.com unexpected: %+v", yt)
+	}
+
+	ip, ok := byLabel["91.108.56.111"]
+	if !ok {
+		t.Fatal("expected bare IP in result")
+	}
+	if ip.Total != 10 {
+		t.Errorf("bare IP unexpected: %+v", ip)
+	}
+
+	if len(got) != 3 {
+		t.Errorf("expected 3 rows after grouping, got %d", len(got))
+	}
+}
+
+func TestQueryAggregateHostGrouping(t *testing.T) {
+	t.Run("groups subdomains when enabled", func(t *testing.T) {
+		svc := newTestService(t)
+		insertTestAggregates(t, svc.db, []aggregatedEntry{
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "r1---sn-abc.googlevideo.com", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 100, Download: 200, Count: 1},
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "r4---sn-xyz.googlevideo.com", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 50, Download: 80, Count: 2},
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "www.youtube.com", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 10, Download: 20, Count: 1},
+		})
+
+		rows, err := svc.queryAggregate("host", 0, 60_000)
+		if err != nil {
+			t.Fatalf("queryAggregate: %v", err)
+		}
+
+		byLabel := make(map[string]aggregatedData)
+		for _, r := range rows {
+			byLabel[r.Label] = r
+		}
+
+		gv, ok := byLabel["googlevideo.com"]
+		if !ok {
+			t.Fatal("expected googlevideo.com grouped row")
+		}
+		if gv.Upload != 150 || gv.Download != 280 || gv.Count != 3 {
+			t.Errorf("googlevideo.com unexpected: %+v", gv)
+		}
+		if _, raw := byLabel["r1---sn-abc.googlevideo.com"]; raw {
+			t.Error("raw subdomain r1---sn-abc.googlevideo.com should not appear when grouping enabled")
+		}
+		if len(rows) != 2 {
+			t.Errorf("expected 2 rows (googlevideo.com + youtube.com), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("returns raw hosts when grouping disabled", func(t *testing.T) {
+		svc := newTestService(t)
+		if err := svc.updateDomainGroupingEnabled(false); err != nil {
+			t.Fatalf("updateDomainGroupingEnabled: %v", err)
+		}
+		insertTestAggregates(t, svc.db, []aggregatedEntry{
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "r1---sn-abc.googlevideo.com", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 100, Download: 200, Count: 1},
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "r4---sn-xyz.googlevideo.com", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 50, Download: 80, Count: 2},
+		})
+
+		rows, err := svc.queryAggregate("host", 0, 60_000)
+		if err != nil {
+			t.Fatalf("queryAggregate: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Errorf("expected 2 raw rows when grouping disabled, got %d", len(rows))
+		}
+	})
+
+	t.Run("non-host dimensions are not grouped", func(t *testing.T) {
+		svc := newTestService(t)
+		insertTestAggregates(t, svc.db, []aggregatedEntry{
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "r1---sn-abc.googlevideo.com", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 100, Download: 200, Count: 1},
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.3", Host: "r4---sn-xyz.googlevideo.com", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 50, Download: 80, Count: 1},
+		})
+
+		rows, err := svc.queryAggregate("sourceIP", 0, 60_000)
+		if err != nil {
+			t.Fatalf("queryAggregate: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Errorf("expected 2 rows for sourceIP dimension, got %d", len(rows))
+		}
+	})
+}

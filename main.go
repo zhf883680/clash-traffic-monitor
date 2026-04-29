@@ -2218,7 +2218,33 @@ func (s *service) queryAggregate(dimension string, start, end int64) ([]aggregat
 	if err != nil {
 		return nil, err
 	}
-	return s.queryByFilters(column, "", nil, start, end)
+	rows, err := s.queryByFilters(column, "", nil, start, end)
+	if err != nil {
+		return nil, err
+	}
+	if column == "host" && s.currentDomainGroupingEnabled() {
+		rows = groupHostRows(rows)
+	}
+	return rows, nil
+}
+
+func groupHostRows(rows []aggregatedData) []aggregatedData {
+	merged := make(map[string]*aggregatedData, len(rows))
+	for _, row := range rows {
+		key := normalizeHost(row.Label)
+		existing, ok := merged[key]
+		if !ok {
+			copyRow := row
+			copyRow.Label = key
+			merged[key] = &copyRow
+			continue
+		}
+		existing.Upload += row.Upload
+		existing.Download += row.Download
+		existing.Total += row.Total
+		existing.Count += row.Count
+	}
+	return sortedAggregatedDataRows(merged)
 }
 
 func (s *service) querySubstats(dimension, label string, start, end int64) ([]aggregatedData, error) {
