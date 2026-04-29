@@ -3115,3 +3115,25 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
 }
+
+func TestNormalizeHost(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"r1---sn-abc.googlevideo.com", "googlevideo.com"},
+		{"www.youtube.com", "youtube.com"},
+		{"91.108.56.111", "91.108.56.111"},
+		{"2001:db8::1", "2001:db8::1"},
+		{"youtube.com", "youtube.com"},
+		{"localhost", "localhost"},
+		{"example.com:443", "example.com"},
+		{"sub.sub.example.com", "example.com"},
+	}
+	for _, c := range cases {
+		got := normalizeHost(c.input)
+		if got != c.want {
+			t.Errorf("normalizeHost(%q) = %q, want %q", c.input, got, c.want)
+		}
+	}
+}

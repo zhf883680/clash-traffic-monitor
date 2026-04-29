@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1625,6 +1626,25 @@ func (s *service) cleanupOldLogs(nowMS int64) error {
 	}
 
 	return nil
+}
+
+// normalizeHost returns the eTLD+1 of host, stripping subdomains.
+// Bare IPs and single-label names are returned unchanged.
+// This is the sole seam for a future Public Suffix List upgrade.
+func normalizeHost(host string) string {
+	// Strip port if present (e.g. "example.com:443").
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	// Return bare IPs unchanged.
+	if net.ParseIP(host) != nil {
+		return host
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) <= 2 {
+		return host
+	}
+	return parts[len(parts)-2] + "." + parts[len(parts)-1]
 }
 
 func (s *service) addToAggregateBuffer(logs []trafficLog, nowMS int64) error {
