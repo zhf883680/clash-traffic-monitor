@@ -51,9 +51,25 @@
                 <input id="end" type="datetime-local" />
               </div>
             </div>
+            <div class="toolbar-group">
+              <div class="toolbar-field">
+                <label for="autoRefreshInterval">自动</label>
+                <select id="autoRefreshInterval">
+                  <option value="0" selected>关闭</option>
+                  <option value="5">5 秒</option>
+                  <option value="10">10 秒</option>
+                  <option value="30">30 秒</option>
+                  <option value="60">1 分钟</option>
+                  <option value="300">5 分钟</option>
+                  <option value="900">15 分钟</option>
+                  <option value="1800">30 分钟</option>
+                  <option value="3600">60 分钟</option>
+                </select>
+              </div>
+              <button id="refreshBtn" class="toolbar-action primary" type="button">刷新</button>
+            </div>
             <button id="settingsBtn" class="toolbar-action ghost" type="button">设置</button>
             <button id="autoSwitchBtn" class="toolbar-action ghost" type="button">自动切换</button>
-            <button id="refreshBtn" class="toolbar-action primary" type="button">刷新</button>
           </div>
         </div>
       </section>
@@ -164,6 +180,9 @@
               <div class="settings-actions">
                 <button id="settingsSaveBtn" class="toolbar-action primary" type="submit">
                   保存并连接
+                </button>
+                <button id="clearBtn" class="toolbar-action danger hidden" type="button">
+                  清空流量数据
                 </button>
                 <button id="settingsCancelBtn" class="toolbar-action ghost hidden" type="button">
                   取消

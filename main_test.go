@@ -2676,6 +2676,66 @@ func TestHandleLogsClearsAggregatesAndBuffer(t *testing.T) {
 	}
 }
 
+func TestHandleLogsClearsAggregatesButNotLabelRules(t *testing.T) {
+	svc := newTestService(t)
+
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('domain', 'telegram.org', 'Telegram', 100, 1)`); err != nil {
+		t.Fatalf("insert label rule: %v", err)
+	}
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "telegram.org", Process: "app", Outbound: "NodeA", Chains: `["DIRECT"]`, Upload: 10, Download: 20, Count: 1},
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/traffic/logs", nil)
+	rec := httptest.NewRecorder()
+	svc.handleLogs(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var aggCount int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM traffic_aggregated`).Scan(&aggCount); err != nil {
+		t.Fatalf("count traffic_aggregated: %v", err)
+	}
+	if aggCount != 0 {
+		t.Fatalf("expected traffic_aggregated to be empty after clear, got %d rows", aggCount)
+	}
+
+	var ruleCount int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM label_rules`).Scan(&ruleCount); err != nil {
+		t.Fatalf("count label_rules: %v", err)
+	}
+	if ruleCount != 1 {
+		t.Fatalf("expected label_rules to be preserved after clear, got %d rows", ruleCount)
+	}
+}
+
+func TestCleanupOldLogsDoesNotRemoveLabelRules(t *testing.T) {
+	svc := newTestService(t)
+
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '91.108.0.0/16', 'Telegram', 50, 1)`); err != nil {
+		t.Fatalf("insert label rule: %v", err)
+	}
+
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.Local).UnixMilli()
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{BucketStart: now - int64(40*24*time.Hour/time.Millisecond), BucketEnd: now - int64(40*24*time.Hour/time.Millisecond) + 60000, SourceIP: "192.168.1.2", Host: "91.108.56.111", Process: "app", Outbound: "NodeA", Chains: `["DIRECT"]`, Upload: 1, Download: 1, Count: 1},
+	})
+
+	if err := svc.cleanupOldLogs(now); err != nil {
+		t.Fatalf("cleanupOldLogs: %v", err)
+	}
+
+	var ruleCount int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM label_rules`).Scan(&ruleCount); err != nil {
+		t.Fatalf("count label_rules: %v", err)
+	}
+	if ruleCount != 1 {
+		t.Fatalf("expected label_rules to survive cleanupOldLogs, got %d rows", ruleCount)
+	}
+}
+
 func TestHandleConnectionDetailsReturnsGroupedDetails(t *testing.T) {
 	svc := newTestService(t)
 
@@ -2817,7 +2877,7 @@ func TestEmbeddedIndexDisablesPeriodicAutoRefresh(t *testing.T) {
 	}
 
 	script := string(scriptContent)
-	if !strings.Contains(script, `elements.refreshBtn.addEventListener("click", loadData)`) {
+	if !strings.Contains(script, `elements.refreshBtn.addEventListener("click", () => loadData(true))`) {
 		t.Fatalf("expected manual refresh handler to remain available")
 	}
 	if !strings.Contains(script, `elements.range.addEventListener("change", () => {`) {
@@ -3166,6 +3226,46 @@ func TestEmbeddedLabelRulesPanel(t *testing.T) {
 		if !strings.Contains(styles, want) {
 			t.Fatalf("expected embedded styles.css to contain %q", want)
 		}
+	}
+}
+
+func TestEmbeddedAutoRefreshFeature(t *testing.T) {
+	indexContent, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+	html := string(indexContent)
+	for _, want := range []string{
+		`id="autoRefreshInterval"`,
+		`value="0" selected`,
+		`value="5"`,
+		`value="30"`,
+		`value="60"`,
+		`value="300"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected embedded index.html to contain %q", want)
+		}
+	}
+
+	scriptContent, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app.js: %v", err)
+	}
+	script := string(scriptContent)
+	for _, want := range []string{
+		`autoRefreshInterval: document.getElementById("autoRefreshInterval")`,
+		"function applyAutoRefresh()",
+		`state.autoRefreshTimer = setInterval(() => loadData(true, silent),`,
+		`elements.autoRefreshInterval.addEventListener("change", applyAutoRefresh)`,
+		"async function loadData(keepSelection = false, silent = false)",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected embedded app.js to contain %q", want)
+		}
+	}
+	if strings.Contains(script, "setInterval(loadData,") {
+		t.Fatalf("expected auto-refresh to call loadData with keepSelection, not bare loadData")
 	}
 }
 

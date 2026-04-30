@@ -178,6 +178,7 @@ select {
   border: 0;
   background: transparent;
   color: var(--text);
+  font-size: 12px;
   min-width: 0;
 }
 

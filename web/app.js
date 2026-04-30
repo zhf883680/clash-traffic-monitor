@@ -96,6 +96,8 @@ const elements = {
   detailSearch: document.getElementById("detailSearch"),
   secondaryBody: document.getElementById("secondaryBody"),
   detailCards: document.getElementById("detailCards"),
+  clearBtn: document.getElementById("clearBtn"),
+  autoRefreshInterval: document.getElementById("autoRefreshInterval"),
   addLabelRuleBtn: document.getElementById("addLabelRuleBtn"),
   labelRuleForm: document.getElementById("labelRuleForm"),
   labelRuleType: document.getElementById("labelRuleType"),
@@ -128,6 +130,7 @@ const state = {
   retentionDays: 30,
   labelRules: [],
   labelRuleEditId: null,
+  autoRefreshTimer: null,
   settingsOpen: false,
   settingsRequired: false,
   autoSwitchOpen: false,
@@ -465,6 +468,7 @@ function syncSettingsUI() {
   elements.runtimeSummary.classList.toggle("hidden", state.settingsRequired)
   elements.settingsCancelBtn.classList.toggle("hidden", state.settingsRequired)
   elements.settingsCloseBtn.classList.toggle("hidden", state.settingsRequired)
+  elements.clearBtn.classList.toggle("hidden", state.settingsRequired)
 
   if (state.settingsRequired) {
     elements.settingsTitle.textContent = "连接 Mihomo"
@@ -1119,7 +1123,7 @@ function renderTrend(points) {
   }
 }
 
-async function loadSecondaryRows(primaryLabel) {
+async function loadSecondaryRows(primaryLabel, keepSelection = false, savedSecondary = null) {
   const { start, end } = getTimeRange()
   const dimension = elements.dimension.value
 
@@ -1149,7 +1153,13 @@ async function loadSecondaryRows(primaryLabel) {
 
   const rows = await fetchJSON(path, params)
   state.secondaryRows = rows
-  state.selectedSecondary = subdomainMode ? null : (rows[0]?.label || null)
+
+  if (keepSelection && savedSecondary && rows.some((r) => r.label === savedSecondary)) {
+    state.selectedSecondary = savedSecondary
+  } else {
+    state.selectedSecondary = subdomainMode ? null : (rows[0]?.label || null)
+  }
+
   renderSecondaryTable(rows)
   updateViewHints()
 
@@ -1194,7 +1204,7 @@ function resetDetailPanels() {
   updateViewHints()
 }
 
-async function loadData() {
+async function loadData(keepSelection = false, silent = false) {
   if (!state.mihomoSettings.url) {
     state.settingsRequired = true
     state.settingsOpen = true
@@ -1210,11 +1220,14 @@ async function loadData() {
   }
 
   const seq = ++state.loadSeq
-  setStatus("加载中...")
+  if (!silent) setStatus("加载中...")
   elements.refreshBtn.disabled = true
 
   try {
-    resetDetailPanels()
+    if (!keepSelection) resetDetailPanels()
+
+    const savedPrimary = keepSelection ? state.selectedPrimary : null
+    const savedSecondary = keepSelection ? state.selectedSecondary : null
 
     const [rows, trend] = await Promise.all([
       fetchJSON("/api/traffic/aggregate", {
@@ -1232,7 +1245,14 @@ async function loadData() {
     if (seq !== state.loadSeq) return
 
     state.primaryRows = rows
-    state.selectedPrimary = rows[0]?.label || null
+
+    if (keepSelection && savedPrimary && rows.some((r) => r.label === savedPrimary)) {
+      state.selectedPrimary = savedPrimary
+      state.selectedSecondary = savedSecondary
+    } else {
+      state.selectedPrimary = rows[0]?.label || null
+      state.selectedSecondary = null
+    }
 
     renderCards(rows)
     renderPrimaryTable(rows)
@@ -1240,16 +1260,40 @@ async function loadData() {
     updateViewHints()
 
     if (state.selectedPrimary) {
-      await loadSecondaryRows(state.selectedPrimary)
+      await loadSecondaryRows(state.selectedPrimary, keepSelection, savedSecondary)
       renderPrimaryTable(state.primaryRows)
     }
 
-    setStatus("")
+    if (!silent) setStatus("")
   } catch (error) {
     console.error(error)
     setStatus(error.message || "加载失败", true)
   } finally {
     elements.refreshBtn.disabled = false
+  }
+}
+
+async function clearData() {
+  if (!window.confirm("确认清空所有流量数据？此操作不可恢复，但不会删除标签规则。")) return
+  try {
+    await sendJSON("/api/traffic/logs", "DELETE")
+    setStatus("流量数据已清空")
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    setStatus(error.message || "清空失败", true)
+  }
+}
+
+function applyAutoRefresh() {
+  if (state.autoRefreshTimer !== null) {
+    clearInterval(state.autoRefreshTimer)
+    state.autoRefreshTimer = null
+  }
+  const seconds = Math.max(0, Math.min(3600, Number(elements.autoRefreshInterval.value) || 0))
+  if (seconds > 0) {
+    const silent = seconds <= 10
+    state.autoRefreshTimer = setInterval(() => loadData(true, silent), seconds * 1000)
   }
 }
 
@@ -1457,7 +1501,9 @@ elements.labelRulesBody.addEventListener("click", async (event) => {
     await deleteLabelRule(id)
   }
 })
-elements.refreshBtn.addEventListener("click", loadData)
+elements.refreshBtn.addEventListener("click", () => loadData(true))
+elements.clearBtn.addEventListener("click", clearData)
+elements.autoRefreshInterval.addEventListener("change", applyAutoRefresh)
 elements.detailSearch.addEventListener("input", (event) => {
   state.detailSearchQuery = event.target.value || ""
   renderSecondaryTable(state.secondaryRows)
