@@ -388,6 +388,21 @@ func openDatabase(path string) (*sql.DB, error) {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_auto_switch_events_triggered_at ON auto_switch_events(triggered_at DESC);
+
+	CREATE TABLE IF NOT EXISTS label_rules (
+		id       INTEGER PRIMARY KEY AUTOINCREMENT,
+		type     TEXT    NOT NULL CHECK(type IN ('domain', 'cidr')),
+		pattern  TEXT    NOT NULL,
+		label    TEXT    NOT NULL,
+		priority INTEGER NOT NULL DEFAULT 100,
+		enabled  INTEGER NOT NULL DEFAULT 1
+	);
+
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_label_rules_pattern
+		ON label_rules(type, pattern);
+
+	CREATE INDEX IF NOT EXISTS idx_label_rules_priority
+		ON label_rules(priority ASC, id ASC);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
