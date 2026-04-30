@@ -31,11 +31,6 @@ jobs:
             goarch: arm64
             cc: aarch64-linux-gnu-gcc
             ext: ""
-          - goos: linux
-            goarch: arm64
-            cc: aarch64-linux-musl-gcc
-            ext: ""
-            musl: true
           - goos: windows
             goarch: amd64
             cc: x86_64-w64-mingw32-gcc
@@ -52,17 +47,9 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Install cross-compilers
-        if: "!matrix.musl"
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu gcc-mingw-w64-x86-64
-
-      - name: Install musl cross-compiler
-        if: matrix.musl
-        run: |
-          curl -L https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/musl-cross.tgz
-          sudo tar -xzf /tmp/musl-cross.tgz -C /usr/local
-          echo "/usr/local/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
 
       - name: Build binary
         working-directory: ${{ env.APP_DIR }}
@@ -72,8 +59,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CC: ${{ matrix.cc }}
         run: |
-          MUSL_SUFFIX="${{ matrix.musl && '-musl' || '' }}"
-          OUTPUT_NAME=traffic-monitor-${{ matrix.goos }}-${{ matrix.goarch }}${MUSL_SUFFIX}${{ matrix.ext }}
+          OUTPUT_NAME=traffic-monitor-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           echo "Building $OUTPUT_NAME"
           go build -ldflags="-s -w" -o "./$OUTPUT_NAME" main.go
           chmod +x "./$OUTPUT_NAME" || true
@@ -81,8 +67,32 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: traffic-monitor-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.musl && '-musl' || '' }}${{ matrix.ext }}
+          name: traffic-monitor-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           path: ${{ env.APP_DIR }}/traffic-monitor-*
+
+  build-musl-arm64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build musl arm64 binary via Alpine container
+        run: |
+          docker run --rm \
+            -v "$(pwd):/app" -w /app \
+            --platform linux/arm64 \
+            golang:1.21-alpine \
+            sh -c "apk add --no-cache gcc musl-dev && \
+                   CGO_ENABLED=1 go build -ldflags='-s -w' -o traffic-monitor-linux-arm64-musl main.go"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traffic-monitor-linux-arm64-musl
+          path: traffic-monitor-linux-arm64-musl
 
   build-macos:
     runs-on: macos-latest
