@@ -1,0 +1,147 @@
+name: Manual Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_docker:
+        description: "Push Docker image"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  APP_DIR: .
+  IMAGE_NAME: zhf883680/clash-traffic-monitor
+
+jobs:
+  build-binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            cc: gcc
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            cc: aarch64-linux-musl-gcc
+            ext: ""
+            musl: true
+          - goos: windows
+            goarch: amd64
+            cc: x86_64-w64-mingw32-gcc
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install cross-compilers
+        if: "!matrix.musl"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-mingw-w64-x86-64
+
+      - name: Install musl cross-compiler
+        if: matrix.musl
+        run: |
+          curl -L https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/musl-cross.tgz
+          sudo tar -xzf /tmp/musl-cross.tgz -C /usr/local
+          echo "/usr/local/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+
+      - name: Build binary
+        working-directory: ${{ env.APP_DIR }}
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          MUSL_SUFFIX="${{ matrix.musl && '-musl' || '' }}"
+          OUTPUT_NAME=traffic-monitor-${{ matrix.goos }}-${{ matrix.goarch }}${MUSL_SUFFIX}${{ matrix.ext }}
+          echo "Building $OUTPUT_NAME"
+          go build -ldflags="-s -w" -o "./$OUTPUT_NAME" main.go
+          chmod +x "./$OUTPUT_NAME" || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traffic-monitor-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.musl && '-musl' || '' }}${{ matrix.ext }}
+          path: ${{ env.APP_DIR }}/traffic-monitor-*
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build macOS arm64 binary
+        working-directory: ${{ env.APP_DIR }}
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          OUTPUT_NAME=traffic-monitor-macos-arm64
+          echo "Building $OUTPUT_NAME"
+          go build -ldflags="-s -w" -o "./$OUTPUT_NAME" main.go
+          chmod +x "./$OUTPUT_NAME"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traffic-monitor-macos-arm64
+          path: ${{ env.APP_DIR }}/traffic-monitor-macos-arm64
+
+  build-docker:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.push_docker == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.APP_DIR }}
+          file: ${{ env.APP_DIR }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
