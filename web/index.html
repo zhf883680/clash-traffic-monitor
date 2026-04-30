@@ -33,7 +33,9 @@
               <div class="toolbar-field">
                 <label for="range">范围</label>
                 <select id="range">
+                  <option value="0">今天</option>
                   <option value="86400000">1 天</option>
+                  <option value="259200000">3 天</option>
                   <option value="604800000" selected>7 天</option>
                   <option value="1296000000">15 天</option>
                   <option value="2592000000">30 天</option>
@@ -49,10 +51,9 @@
                 <input id="end" type="datetime-local" />
               </div>
             </div>
-            <button id="settingsBtn" class="toolbar-action ghost" type="button">连接设置</button>
+            <button id="settingsBtn" class="toolbar-action ghost" type="button">设置</button>
             <button id="autoSwitchBtn" class="toolbar-action ghost" type="button">自动切换</button>
             <button id="refreshBtn" class="toolbar-action primary" type="button">刷新</button>
-            <button id="clearBtn" class="toolbar-action danger" type="button">清空</button>
           </div>
         </div>
       </section>
@@ -98,12 +99,12 @@
           aria-labelledby="settingsTitle"
         >
           <div class="modal-topbar">
-            <div class="summary-eyebrow">Connection Setup</div>
+            <div class="summary-eyebrow">Settings</div>
             <button
               id="settingsCloseBtn"
               class="modal-close"
               type="button"
-              aria-label="关闭连接设置弹窗"
+              aria-label="关闭设置弹窗"
             >
               ×
             </button>
@@ -142,9 +143,23 @@
                   autocomplete="off"
                 />
               </label>
-              <label class="settings-field checkbox-field">
+              <label class="settings-field switch-field">
                 <span>域名分组</span>
-                <input id="domainGroupingEnabled" type="checkbox" />
+                <label class="switch">
+                  <input id="domainGroupingEnabled" type="checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </label>
+              <label class="settings-field">
+                <span>日志保留天数</span>
+                <input
+                  id="retentionDays"
+                  type="number"
+                  min="1"
+                  max="365"
+                  step="1"
+                  placeholder="默认 30 天"
+                />
               </label>
               <div class="settings-actions">
                 <button id="settingsSaveBtn" class="toolbar-action primary" type="submit">
@@ -194,13 +209,19 @@
           <div class="auto-switch-layout">
             <form id="autoSwitchForm" class="auto-switch-form">
               <div class="auto-switch-grid">
-                <label class="settings-field checkbox-field">
+                <label class="settings-field switch-field">
                   <span>启用自动切换</span>
-                  <input id="autoSwitchEnabled" type="checkbox" />
+                  <label class="switch">
+                    <input id="autoSwitchEnabled" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
                 </label>
-                <label class="settings-field checkbox-field">
+                <label class="settings-field switch-field">
                   <span>自动恢复原节点</span>
-                  <input id="autoRestoreEnabled" type="checkbox" />
+                  <label class="switch">
+                    <input id="autoRestoreEnabled" type="checkbox" />
+                    <span class="switch-slider"></span>
+                  </label>
                 </label>
                 <label class="settings-field">
                   <span>1 分钟阈值（MB）</span>

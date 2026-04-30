@@ -32,7 +32,7 @@ const (
 	defaultListenAddr      = ":8080"
 	defaultPollInterval    = 5 * time.Second
 	aggregateFlushInterval = 10 * time.Minute
-	aggregateRetention     = 30 * 24 * time.Hour
+	defaultRetentionDays  = 30
 	defaultAllowedOrigin   = "*"
 )
 
@@ -185,6 +185,7 @@ type service struct {
 	lastVacuum            time.Time
 	aggregateBuffer       map[string]*aggregatedEntry
 	hostMinuteWindows     map[string]*hostTrafficWindow
+	aggregateRetentionDays int
 }
 
 type aggregatedEntry struct {
@@ -233,6 +234,7 @@ func main() {
 		cfg:                   cfg,
 		mihomoSettings:        runtimeSettings,
 		domainGroupingEnabled: domainGroupingEnabled,
+		aggregateRetentionDays: loadRetentionDays(db),
 		lastConnections:       make(map[string]connection),
 		lastVacuum:            time.Now(),
 		aggregateBuffer:       make(map[string]*aggregatedEntry),
@@ -492,6 +494,28 @@ func saveDomainGroupingEnabled(db *sql.DB, enabled bool) error {
 		VALUES ('domain_grouping_enabled', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value
 	`, value)
+	return err
+}
+
+func loadRetentionDays(db *sql.DB) int {
+	var value string
+	err := db.QueryRow(`SELECT value FROM app_settings WHERE key = 'aggregate_retention_days'`).Scan(&value)
+	if err != nil {
+		return defaultRetentionDays
+	}
+	days, err := strconv.Atoi(value)
+	if err != nil || days < 1 {
+		return defaultRetentionDays
+	}
+	return days
+}
+
+func saveRetentionDays(db *sql.DB, days int) error {
+	_, err := db.Exec(`
+		INSERT INTO app_settings (key, value)
+		VALUES ('aggregate_retention_days', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, strconv.Itoa(days))
 	return err
 }
 
@@ -1020,6 +1044,22 @@ func (s *service) updateDomainGroupingEnabled(enabled bool) error {
 	}
 	s.mu.Lock()
 	s.domainGroupingEnabled = enabled
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *service) currentRetentionDays() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.aggregateRetentionDays
+}
+
+func (s *service) updateRetentionDays(days int) error {
+	if err := saveRetentionDays(s.db, days); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.aggregateRetentionDays = days
 	s.mu.Unlock()
 	return nil
 }
@@ -1653,7 +1693,7 @@ func (s *service) cleanupOldLogs(nowMS int64) error {
 		return err
 	}
 
-	aggCutoff := nowMS - int64(aggregateRetention/time.Millisecond)
+	aggCutoff := nowMS - int64(s.aggregateRetentionDays)*86400000
 	if _, err := s.db.Exec(`DELETE FROM traffic_aggregated WHERE bucket_end < ?`, aggCutoff); err != nil {
 		return err
 	}
@@ -1814,6 +1854,7 @@ func (s *service) routes() http.Handler {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/settings/mihomo", s.handleMihomoSettings)
 	mux.HandleFunc("/api/settings/domain-grouping", s.handleDomainGroupingSettings)
+	mux.HandleFunc("/api/settings/retention", s.handleRetentionSettings)
 	mux.HandleFunc("/api/auto-switch/settings", s.handleAutoSwitchSettings)
 	mux.HandleFunc("/api/auto-switch/groups", s.handleAutoSwitchGroups)
 	mux.HandleFunc("/api/auto-switch/events", s.handleAutoSwitchEvents)
@@ -1911,6 +1952,33 @@ func (s *service) handleDomainGroupingSettings(w http.ResponseWriter, r *http.Re
 			return
 		}
 		writeJSON(w, http.StatusOK, domainGroupingResponse{Enabled: s.currentDomainGroupingEnabled()})
+	default:
+		writeMethodNotAllowed(w)
+	}
+}
+
+func (s *service) handleRetentionSettings(w http.ResponseWriter, r *http.Request) {
+	type retentionResponse struct {
+		Days int `json:"days"`
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, retentionResponse{Days: s.currentRetentionDays()})
+	case http.MethodPut:
+		var payload retentionResponse
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid json body"))
+			return
+		}
+		if payload.Days < 1 || payload.Days > 365 {
+			writeError(w, http.StatusBadRequest, errors.New("days must be between 1 and 365"))
+			return
+		}
+		if err := s.updateRetentionDays(payload.Days); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, retentionResponse{Days: s.currentRetentionDays()})
 	default:
 		writeMethodNotAllowed(w)
 	}

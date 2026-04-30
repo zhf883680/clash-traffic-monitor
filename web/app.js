@@ -26,6 +26,7 @@ const drilldownConfig = {
 }
 
 const DIMENSION_STORAGE_KEY = "traffic-monitor:selected-dimension"
+const RANGE_STORAGE_KEY = "traffic-monitor:selected-range"
 const autoSwitchStatusLabels = {
   switched: "已切换目标节点",
   skipped: "无需切换",
@@ -59,6 +60,7 @@ const elements = {
   settingsSaveBtn: document.getElementById("settingsSaveBtn"),
   settingsCancelBtn: document.getElementById("settingsCancelBtn"),
   domainGroupingEnabled: document.getElementById("domainGroupingEnabled"),
+  retentionDays: document.getElementById("retentionDays"),
   settingsCloseBtn: document.getElementById("settingsCloseBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
   autoSwitchBtn: document.getElementById("autoSwitchBtn"),
@@ -78,7 +80,6 @@ const elements = {
   autoSwitchEventsBody: document.getElementById("autoSwitchEventsBody"),
   dashboardShell: document.getElementById("dashboardShell"),
   refreshBtn: document.getElementById("refreshBtn"),
-  clearBtn: document.getElementById("clearBtn"),
   countLabel: document.getElementById("countLabel"),
   primaryTitle: document.getElementById("primaryTitle"),
   countValue: document.getElementById("countValue"),
@@ -114,6 +115,7 @@ const state = {
     secret: "",
   },
   domainGroupingEnabled: false,
+  retentionDays: 30,
   settingsOpen: false,
   settingsRequired: false,
   autoSwitchOpen: false,
@@ -150,6 +152,23 @@ function persistSelectedDimension(value) {
     window.localStorage.setItem(DIMENSION_STORAGE_KEY, value)
   } catch (error) {
     console.warn("Failed to persist selected dimension", error)
+  }
+}
+
+function loadStoredRange() {
+  try {
+    return window.localStorage.getItem(RANGE_STORAGE_KEY)
+  } catch (error) {
+    console.warn("Failed to load stored range", error)
+    return null
+  }
+}
+
+function persistSelectedRange(value) {
+  try {
+    window.localStorage.setItem(RANGE_STORAGE_KEY, value)
+  } catch (error) {
+    console.warn("Failed to persist selected range", error)
   }
 }
 
@@ -209,11 +228,17 @@ function updateTrendAxisLabels(points) {
 }
 
 function updateCustomInputs() {
-  const range = Number(elements.range.value)
-  const end = Date.now()
-  const start = range === -1 ? end - 86400000 : end - range
-  elements.start.value = nowLocalInputValue(start - end)
-  elements.end.value = nowLocalInputValue(0)
+  const rangeMs = Number(elements.range.value)
+  if (rangeMs === -1) return
+
+  const daysBack = rangeMs === 0 ? 0 : Math.round(rangeMs / 86400000)
+  const now = new Date()
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack, 0, 0, 0)
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 0)
+  const pad = (v) => String(v).padStart(2, "0")
+  const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  elements.start.value = fmt(start)
+  elements.end.value = fmt(end)
 }
 
 function getTimeRange() {
@@ -224,11 +249,12 @@ function getTimeRange() {
     }
   }
 
-  const end = Date.now()
-  return {
-    end,
-    start: end - Number(elements.range.value),
-  }
+  const rangeMs = Number(elements.range.value)
+  const daysBack = rangeMs === 0 ? 0 : Math.round(rangeMs / 86400000)
+  const now = new Date()
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack, 0, 0, 0, 0)
+  return { start: start.getTime(), end: end.getTime() }
 }
 
 function currentRangeLabel() {
@@ -239,6 +265,7 @@ function currentRangeLabel() {
 
   const option = elements.range.options[elements.range.selectedIndex]
   const label = option?.textContent?.trim() || "7 天"
+  if (label === "今天") return "今天"
   return `最近 ${label}`
 }
 
@@ -411,6 +438,7 @@ function syncSettingsForm() {
   elements.settingsUrl.value = state.mihomoSettings.url || ""
   elements.settingsSecret.value = state.mihomoSettings.secret || ""
   elements.domainGroupingEnabled.checked = Boolean(state.domainGroupingEnabled)
+  elements.retentionDays.value = state.retentionDays
 }
 
 function syncSettingsUI() {
@@ -428,7 +456,7 @@ function syncSettingsUI() {
       "当前还没有可用的 Mihomo 连接设置。先填写 Mihomo Controller 地址和 Secret，保存后再开始采集。"
     elements.settingsSaveBtn.textContent = "保存并连接"
   } else {
-    elements.settingsTitle.textContent = "更新连接设置"
+    elements.settingsTitle.textContent = "更新设置"
     elements.settingsDescription.textContent =
       "修改后会立刻用于后续采集。下次服务重启时，如果环境变量里仍然有值，会继续以环境变量为准。"
     elements.settingsSaveBtn.textContent = "保存修改"
@@ -611,15 +639,17 @@ function collectAutoSwitchGroupTargets() {
 }
 
 async function loadSettings() {
-  const [settings, grouping] = await Promise.all([
+  const [settings, grouping, retention] = await Promise.all([
     fetchJSON("/api/settings/mihomo"),
     fetchJSON("/api/settings/domain-grouping"),
+    fetchJSON("/api/settings/retention"),
   ])
   state.mihomoSettings = {
     url: settings.url || "",
     secret: settings.secret || "",
   }
   state.domainGroupingEnabled = Boolean(grouping.enabled)
+  state.retentionDays = retention.days || 30
   state.settingsRequired = !state.mihomoSettings.url
   state.settingsOpen = state.settingsRequired
   syncSettingsForm()
@@ -671,6 +701,8 @@ async function saveSettings(event) {
     secret: elements.settingsSecret.value.trim(),
   }
   const groupingPayload = { enabled: elements.domainGroupingEnabled.checked }
+  const retentionDays = Math.max(1, Math.min(365, Number(elements.retentionDays.value) || 30))
+  const retentionPayload = { days: retentionDays }
 
   elements.settingsSaveBtn.disabled = true
   setStatus("正在保存设置...")
@@ -679,12 +711,14 @@ async function saveSettings(event) {
     const [saved] = await Promise.all([
       sendJSON("/api/settings/mihomo", "PUT", mihomoPayload),
       sendJSON("/api/settings/domain-grouping", "PUT", groupingPayload),
+      sendJSON("/api/settings/retention", "PUT", retentionPayload),
     ])
     state.mihomoSettings = {
       url: saved.url || "",
       secret: saved.secret || "",
     }
     state.domainGroupingEnabled = groupingPayload.enabled
+    state.retentionDays = retentionDays
     state.settingsRequired = !state.mihomoSettings.url
     state.settingsOpen = false
     syncSettingsForm()
@@ -1181,29 +1215,9 @@ async function loadData() {
   }
 }
 
-async function clearLogs() {
-  if (!window.confirm("确认清空所有历史流量记录吗？")) return
-
-  setStatus("正在清空...")
-  elements.clearBtn.disabled = true
-
-  try {
-    const response = await fetch("/api/traffic/logs", { method: "DELETE" })
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}))
-      throw new Error(payload.error || "清空失败")
-    }
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    setStatus(error.message || "清空失败", true)
-  } finally {
-    elements.clearBtn.disabled = false
-  }
-}
-
 elements.range.addEventListener("change", () => {
   if (Number(elements.range.value) !== -1) updateCustomInputs()
+  persistSelectedRange(elements.range.value)
   syncContextSummary()
   loadData()
 })
@@ -1255,7 +1269,6 @@ elements.autoSwitchRefreshBtn.addEventListener("click", async () => {
   }
 })
 elements.refreshBtn.addEventListener("click", loadData)
-elements.clearBtn.addEventListener("click", clearLogs)
 elements.detailSearch.addEventListener("input", (event) => {
   state.detailSearchQuery = event.target.value || ""
   renderSecondaryTable(state.secondaryRows)
@@ -1333,6 +1346,13 @@ async function initializeApp() {
     elements.dimension.value = storedDimension
   } else {
     persistSelectedDimension(elements.dimension.value)
+  }
+
+  const storedRange = loadStoredRange()
+  if (storedRange !== null) {
+    elements.range.value = storedRange
+  } else {
+    persistSelectedRange(elements.range.value)
   }
 
   updateCustomInputs()
