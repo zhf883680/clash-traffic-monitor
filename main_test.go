@@ -3084,6 +3084,91 @@ func TestEmbeddedStylesConstrainDashboardHeight(t *testing.T) {
 	}
 }
 
+func TestEmbeddedLabelRulesPanel(t *testing.T) {
+	indexContent, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+	html := string(indexContent)
+	for _, want := range []string{
+		`id="addLabelRuleBtn"`,
+		`id="labelRuleForm"`,
+		`id="labelRuleType"`,
+		`id="labelRulePattern"`,
+		`id="labelRuleLabel"`,
+		`id="labelRulePriority"`,
+		`id="labelRuleSubmitBtn"`,
+		`id="labelRuleCancelBtn"`,
+		`id="labelRulesBody"`,
+		`class="label-rules-section"`,
+		`class="label-rule-form hidden"`,
+		`id="labelRulesNotice"`,
+		`class="label-rules-notice hidden"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected embedded index.html to contain %q", want)
+		}
+	}
+
+	scriptContent, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app.js: %v", err)
+	}
+	script := string(scriptContent)
+	for _, want := range []string{
+		`addLabelRuleBtn: document.getElementById("addLabelRuleBtn")`,
+		`labelRulesBody: document.getElementById("labelRulesBody")`,
+		"async function loadLabelRules()",
+		"function renderLabelRulesTable()",
+		"function openLabelRuleForm(rule)",
+		"function closeLabelRuleForm()",
+		"async function saveLabelRule(event)",
+		"async function deleteLabelRule(id)",
+		"async function toggleLabelRule(id)",
+		`labelRulesNotice: document.getElementById("labelRulesNotice")`,
+		"function syncLabelRulesNotice()",
+		"elements.domainGroupingEnabled.addEventListener(\"change\", syncLabelRulesNotice)",
+		`elements.addLabelRuleBtn.addEventListener("click", () => openLabelRuleForm(null))`,
+		`elements.labelRuleForm.addEventListener("submit", saveLabelRule)`,
+		`elements.labelRuleCancelBtn.addEventListener("click", closeLabelRuleForm)`,
+		`sendJSON("/api/label-rules", "POST", payload)`,
+		"sendJSON(`/api/label-rules/${state.labelRuleEditId}`, \"PUT\", payload)",
+		"sendJSON(`/api/label-rules/${id}`, \"DELETE\")",
+		"sendJSON(`/api/label-rules/${id}/toggle`, \"PATCH\")",
+		"if (response.status === 204) return null",
+		"loadLabelRules().catch(console.error)",
+		"syncSettingsUI()\n  loadLabelRules().catch(console.error)",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected embedded app.js to contain %q", want)
+		}
+	}
+
+	styleContent, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatalf("read embedded styles.css: %v", err)
+	}
+	styles := string(styleContent)
+	for _, want := range []string{
+		".label-rules-section",
+		".label-rules-head",
+		".label-rules-title",
+		".label-rule-form",
+		".label-rule-form-grid",
+		".label-rules-table-wrap",
+		".label-rules-table",
+		".rule-actions",
+		".rule-btn",
+		".delete-rule-btn:hover",
+		".settings-field select",
+		".label-rules-notice",
+	} {
+		if !strings.Contains(styles, want) {
+			t.Fatalf("expected embedded styles.css to contain %q", want)
+		}
+	}
+}
+
 func TestRoutesServeLicense(t *testing.T) {
 	svc := newTestService(t)
 

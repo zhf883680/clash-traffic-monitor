@@ -174,6 +174,74 @@
               </div>
             </form>
           </div>
+
+          <div class="label-rules-section">
+            <div class="label-rules-head">
+              <div>
+                <h3 class="label-rules-title">标签规则</h3>
+                <p class="label-rules-desc">为 IP 段（CIDR）或域名定义自定义标签，优先级数值越小越先匹配。</p>
+              </div>
+              <button id="addLabelRuleBtn" class="toolbar-action ghost" type="button">+ 添加规则</button>
+            </div>
+
+            <div id="labelRulesNotice" class="label-rules-notice hidden">
+              域名分组已关闭，标签规则暂不生效。开启"域名分组"后规则将立即应用。
+            </div>
+
+            <form id="labelRuleForm" class="label-rule-form hidden">
+              <div class="label-rule-form-grid">
+                <label class="settings-field">
+                  <span>类型</span>
+                  <select id="labelRuleType">
+                    <option value="domain">domain</option>
+                    <option value="cidr">cidr</option>
+                  </select>
+                </label>
+                <label class="settings-field">
+                  <span>规则（Pattern）</span>
+                  <input
+                    id="labelRulePattern"
+                    type="text"
+                    placeholder="91.108.0.0/16 或 *.googlevideo.com"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="settings-field">
+                  <span>标签（Label）</span>
+                  <input id="labelRuleLabel" type="text" placeholder="例如 Telegram" autocomplete="off" />
+                </label>
+                <label class="settings-field">
+                  <span>优先级</span>
+                  <input id="labelRulePriority" type="number" min="0" step="1" placeholder="100" />
+                </label>
+              </div>
+              <div class="settings-actions">
+                <button id="labelRuleSubmitBtn" class="toolbar-action primary" type="submit">添加规则</button>
+                <button id="labelRuleCancelBtn" class="toolbar-action ghost" type="button">取消</button>
+              </div>
+            </form>
+
+            <div class="label-rules-table-wrap">
+              <table class="compact-table label-rules-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>优先级</th>
+                    <th>类型</th>
+                    <th>规则</th>
+                    <th>标签</th>
+                    <th>启用</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="labelRulesBody">
+                  <tr>
+                    <td colspan="7" class="empty">暂无规则，点击"添加规则"开始配置</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </section>
       </div>
 

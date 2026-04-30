@@ -96,6 +96,16 @@ const elements = {
   detailSearch: document.getElementById("detailSearch"),
   secondaryBody: document.getElementById("secondaryBody"),
   detailCards: document.getElementById("detailCards"),
+  addLabelRuleBtn: document.getElementById("addLabelRuleBtn"),
+  labelRuleForm: document.getElementById("labelRuleForm"),
+  labelRuleType: document.getElementById("labelRuleType"),
+  labelRulePattern: document.getElementById("labelRulePattern"),
+  labelRuleLabel: document.getElementById("labelRuleLabel"),
+  labelRulePriority: document.getElementById("labelRulePriority"),
+  labelRuleSubmitBtn: document.getElementById("labelRuleSubmitBtn"),
+  labelRuleCancelBtn: document.getElementById("labelRuleCancelBtn"),
+  labelRulesBody: document.getElementById("labelRulesBody"),
+  labelRulesNotice: document.getElementById("labelRulesNotice"),
 }
 
 const state = {
@@ -116,6 +126,8 @@ const state = {
   },
   domainGroupingEnabled: false,
   retentionDays: 30,
+  labelRules: [],
+  labelRuleEditId: null,
   settingsOpen: false,
   settingsRequired: false,
   autoSwitchOpen: false,
@@ -422,16 +434,19 @@ async function fetchJSON(path, params) {
 async function sendJSON(path, method, payload) {
   const response = await fetch(path, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload || {}),
+    headers: { "Content-Type": "application/json" },
+    body: method !== "DELETE" ? JSON.stringify(payload || {}) : undefined,
   })
   if (!response.ok) {
     const errorPayload = await response.json().catch(() => ({}))
     throw new Error(errorPayload.error || `Request failed: ${response.status}`)
   }
+  if (response.status === 204) return null
   return response.json()
+}
+
+function syncLabelRulesNotice() {
+  elements.labelRulesNotice.classList.toggle("hidden", elements.domainGroupingEnabled.checked)
 }
 
 function syncSettingsForm() {
@@ -439,6 +454,7 @@ function syncSettingsForm() {
   elements.settingsSecret.value = state.mihomoSettings.secret || ""
   elements.domainGroupingEnabled.checked = Boolean(state.domainGroupingEnabled)
   elements.retentionDays.value = state.retentionDays
+  syncLabelRulesNotice()
 }
 
 function syncSettingsUI() {
@@ -674,6 +690,7 @@ async function loadSettings() {
   state.settingsOpen = state.settingsRequired
   syncSettingsForm()
   syncSettingsUI()
+  loadLabelRules().catch(console.error)
 }
 
 function openSettingsPanel() {
@@ -683,6 +700,7 @@ function openSettingsPanel() {
   syncSettingsUI()
   syncAutoSwitchUI()
   elements.settingsUrl.focus()
+  loadLabelRules().catch(console.error)
 }
 
 function closeSettingsPanel() {
@@ -1235,6 +1253,121 @@ async function loadData() {
   }
 }
 
+async function loadLabelRules() {
+  try {
+    const rules = await fetchJSON("/api/label-rules")
+    state.labelRules = Array.isArray(rules) ? rules : []
+    renderLabelRulesTable()
+  } catch (error) {
+    console.error("Failed to load label rules", error)
+  }
+}
+
+function renderLabelRulesTable() {
+  if (!state.labelRules.length) {
+    elements.labelRulesBody.innerHTML =
+      '<tr><td colspan="7" class="empty">暂无规则，点击"添加规则"开始配置</td></tr>'
+    return
+  }
+  elements.labelRulesBody.innerHTML = state.labelRules
+    .map(
+      (rule, index) => `
+        <tr data-rule-id="${rule.id}">
+          <td>${index + 1}</td>
+          <td>${escapeHTML(String(rule.priority))}</td>
+          <td><span class="chip route">${escapeHTML(rule.type)}</span></td>
+          <td><div class="mono">${renderTruncatedText(rule.pattern, "host")}</div></td>
+          <td>${renderTruncatedText(rule.label, "label")}</td>
+          <td>
+            <label class="switch">
+              <input class="label-rule-toggle" type="checkbox" data-rule-id="${rule.id}" ${rule.enabled ? "checked" : ""} />
+              <span class="switch-slider"></span>
+            </label>
+          </td>
+          <td>
+            <div class="rule-actions">
+              <button class="rule-btn edit-rule-btn" type="button" data-rule-id="${rule.id}" title="编辑">✎</button>
+              <button class="rule-btn delete-rule-btn" type="button" data-rule-id="${rule.id}" title="删除">✕</button>
+            </div>
+          </td>
+        </tr>
+      `,
+    )
+    .join("")
+}
+
+function openLabelRuleForm(rule) {
+  state.labelRuleEditId = rule ? rule.id : null
+  elements.labelRuleType.value = rule ? rule.type : "domain"
+  elements.labelRulePattern.value = rule ? rule.pattern : ""
+  elements.labelRuleLabel.value = rule ? rule.label : ""
+  elements.labelRulePriority.value = rule ? String(rule.priority) : "100"
+  elements.labelRuleSubmitBtn.textContent = rule ? "保存修改" : "添加规则"
+  elements.labelRuleForm.classList.remove("hidden")
+  elements.labelRulePattern.focus()
+}
+
+function closeLabelRuleForm() {
+  state.labelRuleEditId = null
+  elements.labelRuleForm.classList.add("hidden")
+  elements.labelRuleForm.reset()
+}
+
+async function saveLabelRule(event) {
+  event.preventDefault()
+  const existing =
+    state.labelRuleEditId !== null
+      ? state.labelRules.find((r) => r.id === state.labelRuleEditId)
+      : null
+  const payload = {
+    type: elements.labelRuleType.value,
+    pattern: elements.labelRulePattern.value.trim(),
+    label: elements.labelRuleLabel.value.trim(),
+    priority: Math.max(0, Number(elements.labelRulePriority.value) || 100),
+    enabled: existing ? existing.enabled : true,
+  }
+  elements.labelRuleSubmitBtn.disabled = true
+  try {
+    if (state.labelRuleEditId !== null) {
+      await sendJSON(`/api/label-rules/${state.labelRuleEditId}`, "PUT", payload)
+    } else {
+      await sendJSON("/api/label-rules", "POST", payload)
+    }
+    closeLabelRuleForm()
+    await loadLabelRules()
+    loadData().catch(() => {})
+  } catch (error) {
+    console.error(error)
+    setStatus(error.message || "保存规则失败", true)
+  } finally {
+    elements.labelRuleSubmitBtn.disabled = false
+  }
+}
+
+async function deleteLabelRule(id) {
+  if (!window.confirm("确认删除此规则？")) return
+  try {
+    await sendJSON(`/api/label-rules/${id}`, "DELETE")
+    await loadLabelRules()
+    loadData().catch(() => {})
+  } catch (error) {
+    console.error(error)
+    setStatus(error.message || "删除规则失败", true)
+  }
+}
+
+async function toggleLabelRule(id) {
+  try {
+    await sendJSON(`/api/label-rules/${id}/toggle`, "PATCH")
+    await loadLabelRules()
+    loadData().catch(() => {})
+  } catch (error) {
+    console.error(error)
+    setStatus(error.message || "切换规则状态失败", true)
+    renderLabelRulesTable()
+  }
+}
+
 elements.range.addEventListener("change", () => {
   if (Number(elements.range.value) !== -1) updateCustomInputs()
   persistSelectedRange(elements.range.value)
@@ -1292,6 +1425,36 @@ elements.autoSwitchRefreshBtn.addEventListener("click", async () => {
     setStatus(error.message || "刷新可控策略组失败", true)
   } finally {
     elements.autoSwitchRefreshBtn.disabled = false
+  }
+})
+elements.domainGroupingEnabled.addEventListener("change", syncLabelRulesNotice)
+elements.addLabelRuleBtn.addEventListener("click", () => openLabelRuleForm(null))
+elements.labelRuleForm.addEventListener("submit", saveLabelRule)
+elements.labelRuleCancelBtn.addEventListener("click", closeLabelRuleForm)
+elements.labelRulesBody.addEventListener("change", async (event) => {
+  const toggle = event.target.closest(".label-rule-toggle")
+  if (!toggle) return
+  const id = Number(toggle.dataset.ruleId)
+  if (!id) return
+  toggle.disabled = true
+  try {
+    await toggleLabelRule(id)
+  } finally {
+    toggle.disabled = false
+  }
+})
+elements.labelRulesBody.addEventListener("click", async (event) => {
+  const editBtn = event.target.closest(".edit-rule-btn")
+  if (editBtn) {
+    const id = Number(editBtn.dataset.ruleId)
+    const rule = state.labelRules.find((r) => r.id === id)
+    if (rule) openLabelRuleForm(rule)
+    return
+  }
+  const deleteBtn = event.target.closest(".delete-rule-btn")
+  if (deleteBtn) {
+    const id = Number(deleteBtn.dataset.ruleId)
+    await deleteLabelRule(id)
   }
 })
 elements.refreshBtn.addEventListener("click", loadData)
