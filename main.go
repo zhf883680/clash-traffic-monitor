@@ -208,6 +208,15 @@ type hostTrafficWindow struct {
 	TotalBytes  int64
 }
 
+type labelRule struct {
+	ID       int64  `json:"id"`
+	Type     string `json:"type"`
+	Pattern  string `json:"pattern"`
+	Label    string `json:"label"`
+	Priority int    `json:"priority"`
+	Enabled  bool   `json:"enabled"`
+}
+
 func main() {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -1752,6 +1761,26 @@ func normalizeHost(host string) string {
 		return host
 	}
 	return parts[len(parts)-2] + "." + parts[len(parts)-1]
+}
+
+func loadLabelRules(db *sql.DB) ([]labelRule, error) {
+	rows, err := db.Query(`SELECT id, type, pattern, label, priority, enabled FROM label_rules WHERE enabled = 1 ORDER BY priority ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rules []labelRule
+	for rows.Next() {
+		var r labelRule
+		var enabled int
+		if err := rows.Scan(&r.ID, &r.Type, &r.Pattern, &r.Label, &r.Priority, &enabled); err != nil {
+			return nil, err
+		}
+		r.Enabled = enabled == 1
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
 }
 
 func (s *service) addToAggregateBuffer(logs []trafficLog, nowMS int64) error {
