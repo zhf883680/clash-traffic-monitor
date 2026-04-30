@@ -3804,3 +3804,268 @@ func TestConnectionDetailsSubdomainSecondary(t *testing.T) {
 		t.Fatalf("unexpected grouped IP host detail row: %+v", details[0])
 	}
 }
+
+func TestLoadLabelRules(t *testing.T) {
+	svc := newTestService(t)
+
+	// disabled rules are excluded
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '10.0.0.0/8', 'Internal', 10, 0)`); err != nil {
+		t.Fatalf("insert disabled rule: %v", err)
+	}
+	// enabled rules returned in priority order
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '91.108.0.0/16', 'Telegram', 20, 1)`); err != nil {
+		t.Fatalf("insert rule: %v", err)
+	}
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('domain', '*.googlevideo.com', 'YouTube CDN', 10, 1)`); err != nil {
+		t.Fatalf("insert rule: %v", err)
+	}
+
+	rules, err := loadLabelRules(svc.db)
+	if err != nil {
+		t.Fatalf("loadLabelRules: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 enabled rules, got %d", len(rules))
+	}
+	// ordered by priority ASC: YouTube CDN (10) before Telegram (20)
+	if rules[0].Label != "YouTube CDN" {
+		t.Errorf("expected first rule label 'YouTube CDN', got %q", rules[0].Label)
+	}
+	if rules[1].Label != "Telegram" {
+		t.Errorf("expected second rule label 'Telegram', got %q", rules[1].Label)
+	}
+	for _, r := range rules {
+		if !r.Enabled {
+			t.Errorf("loadLabelRules returned a disabled rule: %+v", r)
+		}
+	}
+}
+
+func TestValidateLabelRule(t *testing.T) {
+	cases := []struct {
+		name    string
+		rule    labelRule
+		wantErr string
+	}{
+		{"valid domain", labelRule{Type: "domain", Pattern: "*.example.com", Label: "Ex", Priority: 0}, ""},
+		{"valid cidr", labelRule{Type: "cidr", Pattern: "10.0.0.0/8", Label: "LAN", Priority: 1}, ""},
+		{"invalid type", labelRule{Type: "regex", Pattern: "x", Label: "x", Priority: 0}, "type must be"},
+		{"empty pattern", labelRule{Type: "domain", Pattern: "", Label: "x", Priority: 0}, "pattern is required"},
+		{"invalid cidr pattern", labelRule{Type: "cidr", Pattern: "not-a-cidr", Label: "x", Priority: 0}, "valid CIDR"},
+		{"empty label", labelRule{Type: "domain", Pattern: "x.com", Label: "", Priority: 0}, "label is required"},
+		{"negative priority", labelRule{Type: "domain", Pattern: "x.com", Label: "x", Priority: -1}, "priority must be"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateLabelRule(tc.rule)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tc.wantErr)
+				} else if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("expected error containing %q, got %q", tc.wantErr, err.Error())
+				}
+			}
+		})
+	}
+}
+
+func TestLabelRulesCRUD(t *testing.T) {
+	svc := newTestService(t)
+
+	// CREATE
+	body := func(s string) *strings.Reader { return strings.NewReader(s) }
+	post := func(path, payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, body(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+	put := func(path, payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, path, body(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+	del := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+	patch := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, path, nil)
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+
+	// POST create
+	w := post("/api/label-rules", `{"type":"cidr","pattern":"91.108.0.0/16","label":"Telegram","priority":10,"enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST /api/label-rules: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var created labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created rule: %v", err)
+	}
+	if created.ID == 0 {
+		t.Error("expected non-zero ID in created rule")
+	}
+	if created.Label != "Telegram" {
+		t.Errorf("expected label 'Telegram', got %q", created.Label)
+	}
+
+	// GET list — should contain the created rule
+	w = get("/api/label-rules")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/label-rules: expected 200, got %d", w.Code)
+	}
+	var list []labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 1 || list[0].Label != "Telegram" {
+		t.Errorf("expected 1 rule 'Telegram', got %v", list)
+	}
+
+	// PUT update
+	idPath := fmt.Sprintf("/api/label-rules/%d", created.ID)
+	w = put(idPath, `{"type":"domain","pattern":"*.telegram.org","label":"Telegram Web","priority":5,"enabled":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT %s: expected 200, got %d: %s", idPath, w.Code, w.Body.String())
+	}
+	var updated labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode updated rule: %v", err)
+	}
+	if updated.Label != "Telegram Web" || updated.Type != "domain" {
+		t.Errorf("unexpected updated rule: %+v", updated)
+	}
+
+	// PATCH toggle — disable the rule
+	w = patch(idPath + "/toggle")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH toggle: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var toggled labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &toggled); err != nil {
+		t.Fatalf("decode toggled rule: %v", err)
+	}
+	if toggled.Enabled {
+		t.Error("expected rule to be disabled after toggle")
+	}
+
+	// GET list — disabled rule still appears in list
+	w = get("/api/label-rules")
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list after toggle: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("expected 1 rule in list after toggle, got %d", len(list))
+	}
+	if list[0].Enabled {
+		t.Error("expected rule to appear as disabled in list")
+	}
+
+	// DELETE
+	w = del(idPath)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DELETE %s: expected 204, got %d: %s", idPath, w.Code, w.Body.String())
+	}
+
+	// GET list — empty after delete
+	w = get("/api/label-rules")
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list after delete: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("expected empty list after delete, got %d rules", len(list))
+	}
+
+	// Validation errors
+	w = post("/api/label-rules", `{"type":"bad","pattern":"x","label":"x","priority":0,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid type, got %d", w.Code)
+	}
+	w = post("/api/label-rules", `{"type":"cidr","pattern":"not-a-cidr","label":"x","priority":0,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid CIDR, got %d", w.Code)
+	}
+	w = post("/api/label-rules", `{"type":"domain","pattern":"x","label":"","priority":0,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty label, got %d", w.Code)
+	}
+	w = post("/api/label-rules", `{"type":"domain","pattern":"","label":"x","priority":0,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty pattern, got %d", w.Code)
+	}
+	w = post("/api/label-rules", `{"type":"domain","pattern":"x.com","label":"x","priority":-1,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for negative priority, got %d", w.Code)
+	}
+
+	// Malformed JSON body
+	w = post("/api/label-rules", `{not json}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for malformed POST body, got %d", w.Code)
+	}
+
+	// Non-numeric ID
+	{
+		req := httptest.NewRequest(http.MethodPut, "/api/label-rules/abc", body(`{"type":"domain","pattern":"x.com","label":"X","priority":0,"enabled":true}`))
+		req.Header.Set("Content-Type", "application/json")
+		rw := httptest.NewRecorder()
+		svc.handleLabelRules(rw, req)
+		if rw.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for non-numeric id, got %d", rw.Code)
+		}
+	}
+
+	// PATCH toggle re-enables a disabled rule
+	w2 := post("/api/label-rules", `{"type":"domain","pattern":"*.example.com","label":"Example","priority":1,"enabled":false}`)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("POST for re-enable test: expected 201, got %d", w2.Code)
+	}
+	var r2 labelRule
+	if err := json.Unmarshal(w2.Body.Bytes(), &r2); err != nil {
+		t.Fatalf("decode rule: %v", err)
+	}
+	r2Path := fmt.Sprintf("/api/label-rules/%d/toggle", r2.ID)
+	w = patch(r2Path)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH toggle (enable): expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var re labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &re); err != nil {
+		t.Fatalf("decode re-enabled rule: %v", err)
+	}
+	if !re.Enabled {
+		t.Error("expected rule to be enabled after toggle from disabled state")
+	}
+
+	// Not found
+	w = del("/api/label-rules/99999")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing rule delete, got %d", w.Code)
+	}
+	w = put("/api/label-rules/99999", `{"type":"domain","pattern":"x.com","label":"X","priority":0,"enabled":true}`)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing rule update, got %d", w.Code)
+	}
+	w = patch("/api/label-rules/99999/toggle")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing rule toggle, got %d", w.Code)
+	}
+}

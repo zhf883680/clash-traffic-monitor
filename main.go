@@ -1947,6 +1947,8 @@ func (s *service) routes() http.Handler {
 	mux.HandleFunc("/api/traffic/details", s.handleConnectionDetails)
 	mux.HandleFunc("/api/traffic/trend", s.handleTrend)
 	mux.HandleFunc("/api/traffic/logs", s.handleLogs)
+	mux.HandleFunc("/api/label-rules", s.handleLabelRules)
+	mux.HandleFunc("/api/label-rules/", s.handleLabelRules)
 	return s.withCORS(mux)
 }
 
@@ -1954,7 +1956,7 @@ func (s *service) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", defaultAllowedOrigin)
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2362,6 +2364,167 @@ func (s *service) handleLogs(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *service) handleLabelRules(w http.ResponseWriter, r *http.Request) {
+	suffix := strings.TrimPrefix(r.URL.Path, "/api/label-rules")
+	suffix = strings.TrimPrefix(suffix, "/")
+
+	// Collection operations: GET list, POST create
+	if suffix == "" {
+		switch r.Method {
+		case http.MethodGet:
+			rows, err := s.db.Query(`SELECT id, type, pattern, label, priority, enabled FROM label_rules ORDER BY priority ASC, id ASC`)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			defer rows.Close()
+			var rules []labelRule
+			for rows.Next() {
+				var ru labelRule
+				var enabled int
+				if err := rows.Scan(&ru.ID, &ru.Type, &ru.Pattern, &ru.Label, &ru.Priority, &enabled); err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				ru.Enabled = enabled == 1
+				rules = append(rules, ru)
+			}
+			if err := rows.Err(); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if rules == nil {
+				rules = []labelRule{}
+			}
+			writeJSON(w, http.StatusOK, rules)
+		case http.MethodPost:
+			var payload labelRule
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("invalid json body"))
+				return
+			}
+			if err := validateLabelRule(payload); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			enabled := 0
+			if payload.Enabled {
+				enabled = 1
+			}
+			result, err := s.db.Exec(
+				`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES (?, ?, ?, ?, ?)`,
+				payload.Type, payload.Pattern, payload.Label, payload.Priority, enabled,
+			)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			id, _ := result.LastInsertId()
+			payload.ID = id
+			writeJSON(w, http.StatusCreated, payload)
+		default:
+			writeMethodNotAllowed(w)
+		}
+		return
+	}
+
+	// Item operations: PUT update, DELETE, PATCH toggle
+	parts := strings.SplitN(suffix, "/", 2)
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid rule id"))
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodPut && len(parts) == 1:
+		var payload labelRule
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid json body"))
+			return
+		}
+		if err := validateLabelRule(payload); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		enabled := 0
+		if payload.Enabled {
+			enabled = 1
+		}
+		res, err := s.db.Exec(
+			`UPDATE label_rules SET type=?, pattern=?, label=?, priority=?, enabled=? WHERE id=?`,
+			payload.Type, payload.Pattern, payload.Label, payload.Priority, enabled, id,
+		)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			writeError(w, http.StatusNotFound, errors.New("rule not found"))
+			return
+		}
+		payload.ID = id
+		writeJSON(w, http.StatusOK, payload)
+
+	case r.Method == http.MethodDelete && len(parts) == 1:
+		res, err := s.db.Exec(`DELETE FROM label_rules WHERE id=?`, id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			writeError(w, http.StatusNotFound, errors.New("rule not found"))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	case r.Method == http.MethodPatch && len(parts) == 2 && parts[1] == "toggle":
+		var ru labelRule
+		var enabled int
+		err := s.db.QueryRow(`SELECT id, type, pattern, label, priority, enabled FROM label_rules WHERE id=?`, id).
+			Scan(&ru.ID, &ru.Type, &ru.Pattern, &ru.Label, &ru.Priority, &enabled)
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, errors.New("rule not found"))
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		newEnabled := 1 - enabled
+		if _, err := s.db.Exec(`UPDATE label_rules SET enabled=? WHERE id=?`, newEnabled, id); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		ru.Enabled = newEnabled == 1
+		writeJSON(w, http.StatusOK, ru)
+
+	default:
+		writeMethodNotAllowed(w)
+	}
+}
+
+func validateLabelRule(r labelRule) error {
+	if r.Type != "domain" && r.Type != "cidr" {
+		return errors.New("type must be 'domain' or 'cidr'")
+	}
+	if r.Pattern == "" {
+		return errors.New("pattern is required")
+	}
+	if r.Type == "cidr" {
+		if _, _, err := net.ParseCIDR(r.Pattern); err != nil {
+			return errors.New("pattern is not a valid CIDR")
+		}
+	}
+	if r.Label == "" {
+		return errors.New("label is required")
+	}
+	if r.Priority < 0 {
+		return errors.New("priority must be >= 0")
+	}
+	return nil
 }
 
 func (s *service) queryAggregate(dimension string, start, end int64, raw bool) ([]aggregatedData, error) {
