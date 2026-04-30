@@ -117,7 +117,6 @@ jobs:
 
   build-docker:
     runs-on: ubuntu-latest
-    if: github.event.inputs.push_docker == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -134,14 +133,15 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push Docker image
+      - name: Build Docker image
         uses: docker/build-push-action@v6
         with:
           context: ${{ env.APP_DIR }}
           file: ${{ env.APP_DIR }}/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event.inputs.push_docker == 'true' }}
           tags: |
             ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/image.tar
