@@ -1783,6 +1783,33 @@ func loadLabelRules(db *sql.DB) ([]labelRule, error) {
 	return rules, rows.Err()
 }
 
+func applyLabel(host string, rules []labelRule, groupingEnabled bool) string {
+	if !groupingEnabled {
+		return host
+	}
+	for _, r := range rules {
+		switch r.Type {
+		case "domain":
+			if strings.HasPrefix(r.Pattern, "*.") {
+				if strings.HasSuffix(host, r.Pattern[1:]) {
+					return r.Label
+				}
+			} else if host == r.Pattern {
+				return r.Label
+			}
+		case "cidr":
+			if ip := net.ParseIP(host); ip != nil {
+				if _, cidr, err := net.ParseCIDR(r.Pattern); err == nil {
+					if cidr.Contains(ip) {
+						return r.Label
+					}
+				}
+			}
+		}
+	}
+	return normalizeHost(host)
+}
+
 func (s *service) addToAggregateBuffer(logs []trafficLog, nowMS int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

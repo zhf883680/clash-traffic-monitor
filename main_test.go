@@ -3560,6 +3560,108 @@ func TestQuerySubstatsHostGrouping(t *testing.T) {
 	})
 }
 
+func TestApplyLabel(t *testing.T) {
+	cidrRule := labelRule{ID: 1, Type: "cidr", Pattern: "91.108.0.0/16", Label: "Telegram", Priority: 10, Enabled: true}
+	wildcardRule := labelRule{ID: 2, Type: "domain", Pattern: "*.googlevideo.com", Label: "YouTube CDN", Priority: 20, Enabled: true}
+	exactRule := labelRule{ID: 3, Type: "domain", Pattern: "telegram.org", Label: "Telegram Web", Priority: 30, Enabled: true}
+	invalidCIDR := labelRule{ID: 4, Type: "cidr", Pattern: "not-a-cidr", Label: "Bad", Priority: 5, Enabled: true}
+
+	tests := []struct {
+		name             string
+		host             string
+		rules            []labelRule
+		groupingEnabled  bool
+		want             string
+	}{
+		{
+			name:            "grouping disabled returns raw host",
+			host:            "91.108.56.111",
+			rules:           []labelRule{cidrRule},
+			groupingEnabled: false,
+			want:            "91.108.56.111",
+		},
+		{
+			name:            "cidr match returns label",
+			host:            "91.108.56.111",
+			rules:           []labelRule{cidrRule},
+			groupingEnabled: true,
+			want:            "Telegram",
+		},
+		{
+			name:            "cidr no-match falls back to normalizeHost",
+			host:            "8.8.8.8",
+			rules:           []labelRule{cidrRule},
+			groupingEnabled: true,
+			want:            "8.8.8.8",
+		},
+		{
+			name:            "wildcard domain match returns label",
+			host:            "r1---sn-abc.googlevideo.com",
+			rules:           []labelRule{wildcardRule},
+			groupingEnabled: true,
+			want:            "YouTube CDN",
+		},
+		{
+			name:            "wildcard does not match exact root domain",
+			host:            "googlevideo.com",
+			rules:           []labelRule{wildcardRule},
+			groupingEnabled: true,
+			want:            "googlevideo.com",
+		},
+		{
+			name:            "exact domain match returns label",
+			host:            "telegram.org",
+			rules:           []labelRule{exactRule},
+			groupingEnabled: true,
+			want:            "Telegram Web",
+		},
+		{
+			name:            "exact match does not fire on subdomain",
+			host:            "www.telegram.org",
+			rules:           []labelRule{exactRule},
+			groupingEnabled: true,
+			want:            "telegram.org",
+		},
+		{
+			name:            "priority order — lower number wins",
+			host:            "91.108.56.111",
+			rules:           []labelRule{cidrRule, labelRule{ID: 5, Type: "cidr", Pattern: "91.108.0.0/8", Label: "Broader", Priority: 50, Enabled: true}},
+			groupingEnabled: true,
+			want:            "Telegram",
+		},
+		{
+			name:            "invalid cidr skipped without panic, fallback used",
+			host:            "1.2.3.4",
+			rules:           []labelRule{invalidCIDR},
+			groupingEnabled: true,
+			want:            "1.2.3.4",
+		},
+		{
+			name:            "no rules falls back to normalizeHost",
+			host:            "r1---sn-abc.googlevideo.com",
+			rules:           nil,
+			groupingEnabled: true,
+			want:            "googlevideo.com",
+		},
+		{
+			name:            "cidr rule ignored for non-IP host",
+			host:            "telegram.org",
+			rules:           []labelRule{cidrRule},
+			groupingEnabled: true,
+			want:            "telegram.org",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applyLabel(tt.host, tt.rules, tt.groupingEnabled)
+			if got != tt.want {
+				t.Errorf("applyLabel(%q) = %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConnectionDetailsSubdomainSecondary(t *testing.T) {
 	svc := newTestService(t)
 	insertTestAggregates(t, svc.db, []aggregatedEntry{
