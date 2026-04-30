@@ -2676,6 +2676,66 @@ func TestHandleLogsClearsAggregatesAndBuffer(t *testing.T) {
 	}
 }
 
+func TestHandleLogsClearsAggregatesButNotLabelRules(t *testing.T) {
+	svc := newTestService(t)
+
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('domain', 'telegram.org', 'Telegram', 100, 1)`); err != nil {
+		t.Fatalf("insert label rule: %v", err)
+	}
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "telegram.org", Process: "app", Outbound: "NodeA", Chains: `["DIRECT"]`, Upload: 10, Download: 20, Count: 1},
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/traffic/logs", nil)
+	rec := httptest.NewRecorder()
+	svc.handleLogs(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var aggCount int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM traffic_aggregated`).Scan(&aggCount); err != nil {
+		t.Fatalf("count traffic_aggregated: %v", err)
+	}
+	if aggCount != 0 {
+		t.Fatalf("expected traffic_aggregated to be empty after clear, got %d rows", aggCount)
+	}
+
+	var ruleCount int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM label_rules`).Scan(&ruleCount); err != nil {
+		t.Fatalf("count label_rules: %v", err)
+	}
+	if ruleCount != 1 {
+		t.Fatalf("expected label_rules to be preserved after clear, got %d rows", ruleCount)
+	}
+}
+
+func TestCleanupOldLogsDoesNotRemoveLabelRules(t *testing.T) {
+	svc := newTestService(t)
+
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '91.108.0.0/16', 'Telegram', 50, 1)`); err != nil {
+		t.Fatalf("insert label rule: %v", err)
+	}
+
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.Local).UnixMilli()
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{BucketStart: now - int64(40*24*time.Hour/time.Millisecond), BucketEnd: now - int64(40*24*time.Hour/time.Millisecond) + 60000, SourceIP: "192.168.1.2", Host: "91.108.56.111", Process: "app", Outbound: "NodeA", Chains: `["DIRECT"]`, Upload: 1, Download: 1, Count: 1},
+	})
+
+	if err := svc.cleanupOldLogs(now); err != nil {
+		t.Fatalf("cleanupOldLogs: %v", err)
+	}
+
+	var ruleCount int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM label_rules`).Scan(&ruleCount); err != nil {
+		t.Fatalf("count label_rules: %v", err)
+	}
+	if ruleCount != 1 {
+		t.Fatalf("expected label_rules to survive cleanupOldLogs, got %d rows", ruleCount)
+	}
+}
+
 func TestHandleConnectionDetailsReturnsGroupedDetails(t *testing.T) {
 	svc := newTestService(t)
 
@@ -2817,7 +2877,7 @@ func TestEmbeddedIndexDisablesPeriodicAutoRefresh(t *testing.T) {
 	}
 
 	script := string(scriptContent)
-	if !strings.Contains(script, `elements.refreshBtn.addEventListener("click", loadData)`) {
+	if !strings.Contains(script, `elements.refreshBtn.addEventListener("click", () => loadData(true))`) {
 		t.Fatalf("expected manual refresh handler to remain available")
 	}
 	if !strings.Contains(script, `elements.range.addEventListener("change", () => {`) {
@@ -3084,6 +3144,131 @@ func TestEmbeddedStylesConstrainDashboardHeight(t *testing.T) {
 	}
 }
 
+func TestEmbeddedLabelRulesPanel(t *testing.T) {
+	indexContent, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+	html := string(indexContent)
+	for _, want := range []string{
+		`id="addLabelRuleBtn"`,
+		`id="labelRuleForm"`,
+		`id="labelRuleType"`,
+		`id="labelRulePattern"`,
+		`id="labelRuleLabel"`,
+		`id="labelRulePriority"`,
+		`id="labelRuleSubmitBtn"`,
+		`id="labelRuleCancelBtn"`,
+		`id="labelRulesBody"`,
+		`class="label-rules-section"`,
+		`class="label-rule-form hidden"`,
+		`id="labelRulesNotice"`,
+		`class="label-rules-notice hidden"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected embedded index.html to contain %q", want)
+		}
+	}
+
+	scriptContent, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app.js: %v", err)
+	}
+	script := string(scriptContent)
+	for _, want := range []string{
+		`addLabelRuleBtn: document.getElementById("addLabelRuleBtn")`,
+		`labelRulesBody: document.getElementById("labelRulesBody")`,
+		"async function loadLabelRules()",
+		"function renderLabelRulesTable()",
+		"function openLabelRuleForm(rule)",
+		"function closeLabelRuleForm()",
+		"async function saveLabelRule(event)",
+		"async function deleteLabelRule(id)",
+		"async function toggleLabelRule(id)",
+		`labelRulesNotice: document.getElementById("labelRulesNotice")`,
+		"function syncLabelRulesNotice()",
+		"elements.domainGroupingEnabled.addEventListener(\"change\", syncLabelRulesNotice)",
+		`elements.addLabelRuleBtn.addEventListener("click", () => openLabelRuleForm(null))`,
+		`elements.labelRuleForm.addEventListener("submit", saveLabelRule)`,
+		`elements.labelRuleCancelBtn.addEventListener("click", closeLabelRuleForm)`,
+		`sendJSON("/api/label-rules", "POST", payload)`,
+		"sendJSON(`/api/label-rules/${state.labelRuleEditId}`, \"PUT\", payload)",
+		"sendJSON(`/api/label-rules/${id}`, \"DELETE\")",
+		"sendJSON(`/api/label-rules/${id}/toggle`, \"PATCH\")",
+		"if (response.status === 204) return null",
+		"loadLabelRules().catch(console.error)",
+		"syncSettingsUI()\n  loadLabelRules().catch(console.error)",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected embedded app.js to contain %q", want)
+		}
+	}
+
+	styleContent, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatalf("read embedded styles.css: %v", err)
+	}
+	styles := string(styleContent)
+	for _, want := range []string{
+		".label-rules-section",
+		".label-rules-head",
+		".label-rules-title",
+		".label-rule-form",
+		".label-rule-form-grid",
+		".label-rules-table-wrap",
+		".label-rules-table",
+		".rule-actions",
+		".rule-btn",
+		".delete-rule-btn:hover",
+		".settings-field select",
+		".label-rules-notice",
+	} {
+		if !strings.Contains(styles, want) {
+			t.Fatalf("expected embedded styles.css to contain %q", want)
+		}
+	}
+}
+
+func TestEmbeddedAutoRefreshFeature(t *testing.T) {
+	indexContent, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+	html := string(indexContent)
+	for _, want := range []string{
+		`id="autoRefreshInterval"`,
+		`value="0" selected`,
+		`value="5"`,
+		`value="30"`,
+		`value="60"`,
+		`value="300"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected embedded index.html to contain %q", want)
+		}
+	}
+
+	scriptContent, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app.js: %v", err)
+	}
+	script := string(scriptContent)
+	for _, want := range []string{
+		`autoRefreshInterval: document.getElementById("autoRefreshInterval")`,
+		"function applyAutoRefresh()",
+		`state.autoRefreshTimer = setInterval(() => loadData(true, silent),`,
+		`elements.autoRefreshInterval.addEventListener("change", applyAutoRefresh)`,
+		"async function loadData(keepSelection = false, silent = false)",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected embedded app.js to contain %q", want)
+		}
+	}
+	if strings.Contains(script, "setInterval(loadData,") {
+		t.Fatalf("expected auto-refresh to call loadData with keepSelection, not bare loadData")
+	}
+}
+
 func TestRoutesServeLicense(t *testing.T) {
 	svc := newTestService(t)
 
@@ -3153,12 +3338,13 @@ func newTestService(t *testing.T) *service {
 	})
 
 	return &service{
-		db:                    db,
-		now:                   time.Now,
-		domainGroupingEnabled: loadDomainGroupingEnabled(db),
-		lastConnections:       make(map[string]connection),
-		aggregateBuffer:       make(map[string]*aggregatedEntry),
-		hostMinuteWindows:     make(map[string]*hostTrafficWindow),
+		db:                     db,
+		now:                    time.Now,
+		domainGroupingEnabled:  loadDomainGroupingEnabled(db),
+		aggregateRetentionDays: loadRetentionDays(db),
+		lastConnections:        make(map[string]connection),
+		aggregateBuffer:        make(map[string]*aggregatedEntry),
+		hostMinuteWindows:      make(map[string]*hostTrafficWindow),
 	}
 }
 
@@ -3353,7 +3539,7 @@ func TestGroupHostRows(t *testing.T) {
 		{Label: "www.youtube.com", Upload: 10, Download: 20, Total: 30, Count: 1},
 		{Label: "91.108.56.111", Upload: 5, Download: 5, Total: 10, Count: 1},
 	}
-	got := groupHostRows(rows)
+	got := groupHostRows(rows, nil, true)
 
 	byLabel := make(map[string]aggregatedData, len(got))
 	for _, r := range got {
@@ -3386,6 +3572,38 @@ func TestGroupHostRows(t *testing.T) {
 
 	if len(got) != 3 {
 		t.Errorf("expected 3 rows after grouping, got %d", len(got))
+	}
+}
+
+func TestGroupHostRowsWithRules(t *testing.T) {
+	rules := []labelRule{
+		{ID: 1, Type: "cidr", Pattern: "91.108.56.0/24", Label: "Telegram", Priority: 10, Enabled: true},
+	}
+	rows := []aggregatedData{
+		{Label: "91.108.56.111", Upload: 100, Download: 200, Total: 300, Count: 1},
+		{Label: "91.108.56.112", Upload: 50, Download: 100, Total: 150, Count: 2},
+		{Label: "www.youtube.com", Upload: 10, Download: 20, Total: 30, Count: 1},
+	}
+	got := groupHostRows(rows, rules, true)
+
+	byLabel := make(map[string]aggregatedData, len(got))
+	for _, r := range got {
+		byLabel[r.Label] = r
+	}
+
+	tg, ok := byLabel["Telegram"]
+	if !ok {
+		t.Fatal("expected Telegram label from CIDR rule")
+	}
+	if tg.Upload != 150 || tg.Download != 300 || tg.Total != 450 || tg.Count != 3 {
+		t.Errorf("Telegram unexpected: %+v", tg)
+	}
+
+	if _, ok := byLabel["youtube.com"]; !ok {
+		t.Fatal("expected youtube.com via normalizeHost fallback")
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 rows, got %d", len(got))
 	}
 }
 
@@ -3539,6 +3757,39 @@ func TestQuerySubstatsHostGrouping(t *testing.T) {
 		}
 	})
 
+	t.Run("returns raw IPs for user-defined CIDR label", func(t *testing.T) {
+		svc := newTestService(t)
+		if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '91.108.0.0/16', 'Telegram', 10, 1)`); err != nil {
+			t.Fatalf("insert label rule: %v", err)
+		}
+		insertTestAggregates(t, svc.db, []aggregatedEntry{
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "91.108.56.111", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 100, Download: 200, Count: 1},
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "91.108.56.100", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 50, Download: 80, Count: 2},
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "8.8.8.8", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 10, Download: 20, Count: 1},
+		})
+
+		rows, err := svc.querySubstats("host", "Telegram", 0, 60_000)
+		if err != nil {
+			t.Fatalf("querySubstats: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Errorf("expected 2 Telegram IP rows, got %d: %v", len(rows), rows)
+		}
+		byLabel := make(map[string]aggregatedData)
+		for _, r := range rows {
+			byLabel[r.Label] = r
+		}
+		if _, ok := byLabel["91.108.56.111"]; !ok {
+			t.Error("expected 91.108.56.111 in Telegram substats")
+		}
+		if _, ok := byLabel["91.108.56.100"]; !ok {
+			t.Error("expected 91.108.56.100 in Telegram substats")
+		}
+		if _, ok := byLabel["8.8.8.8"]; ok {
+			t.Error("8.8.8.8 should not appear in Telegram substats")
+		}
+	})
+
 	t.Run("exact match passes through for bare IP label", func(t *testing.T) {
 		svc := newTestService(t)
 		insertTestAggregates(t, svc.db, []aggregatedEntry{
@@ -3557,6 +3808,108 @@ func TestQuerySubstatsHostGrouping(t *testing.T) {
 			t.Errorf("expected label 192.0.2.1, got %s", rows[0].Label)
 		}
 	})
+}
+
+func TestApplyLabel(t *testing.T) {
+	cidrRule := labelRule{ID: 1, Type: "cidr", Pattern: "91.108.0.0/16", Label: "Telegram", Priority: 10, Enabled: true}
+	wildcardRule := labelRule{ID: 2, Type: "domain", Pattern: "*.googlevideo.com", Label: "YouTube CDN", Priority: 20, Enabled: true}
+	exactRule := labelRule{ID: 3, Type: "domain", Pattern: "telegram.org", Label: "Telegram Web", Priority: 30, Enabled: true}
+	invalidCIDR := labelRule{ID: 4, Type: "cidr", Pattern: "not-a-cidr", Label: "Bad", Priority: 5, Enabled: true}
+
+	tests := []struct {
+		name             string
+		host             string
+		rules            []labelRule
+		groupingEnabled  bool
+		want             string
+	}{
+		{
+			name:            "grouping disabled returns raw host",
+			host:            "91.108.56.111",
+			rules:           []labelRule{cidrRule},
+			groupingEnabled: false,
+			want:            "91.108.56.111",
+		},
+		{
+			name:            "cidr match returns label",
+			host:            "91.108.56.111",
+			rules:           []labelRule{cidrRule},
+			groupingEnabled: true,
+			want:            "Telegram",
+		},
+		{
+			name:            "cidr no-match falls back to normalizeHost",
+			host:            "8.8.8.8",
+			rules:           []labelRule{cidrRule},
+			groupingEnabled: true,
+			want:            "8.8.8.8",
+		},
+		{
+			name:            "wildcard domain match returns label",
+			host:            "r1---sn-abc.googlevideo.com",
+			rules:           []labelRule{wildcardRule},
+			groupingEnabled: true,
+			want:            "YouTube CDN",
+		},
+		{
+			name:            "wildcard does not match exact root domain",
+			host:            "googlevideo.com",
+			rules:           []labelRule{wildcardRule},
+			groupingEnabled: true,
+			want:            "googlevideo.com",
+		},
+		{
+			name:            "exact domain match returns label",
+			host:            "telegram.org",
+			rules:           []labelRule{exactRule},
+			groupingEnabled: true,
+			want:            "Telegram Web",
+		},
+		{
+			name:            "exact match does not fire on subdomain",
+			host:            "www.telegram.org",
+			rules:           []labelRule{exactRule},
+			groupingEnabled: true,
+			want:            "telegram.org",
+		},
+		{
+			name:            "priority order — lower number wins",
+			host:            "91.108.56.111",
+			rules:           []labelRule{cidrRule, labelRule{ID: 5, Type: "cidr", Pattern: "91.108.0.0/8", Label: "Broader", Priority: 50, Enabled: true}},
+			groupingEnabled: true,
+			want:            "Telegram",
+		},
+		{
+			name:            "invalid cidr skipped without panic, fallback used",
+			host:            "1.2.3.4",
+			rules:           []labelRule{invalidCIDR},
+			groupingEnabled: true,
+			want:            "1.2.3.4",
+		},
+		{
+			name:            "no rules falls back to normalizeHost",
+			host:            "r1---sn-abc.googlevideo.com",
+			rules:           nil,
+			groupingEnabled: true,
+			want:            "googlevideo.com",
+		},
+		{
+			name:            "cidr rule ignored for non-IP host",
+			host:            "telegram.org",
+			rules:           []labelRule{cidrRule},
+			groupingEnabled: true,
+			want:            "telegram.org",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applyLabel(tt.host, tt.rules, tt.groupingEnabled)
+			if got != tt.want {
+				t.Errorf("applyLabel(%q) = %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestConnectionDetailsSubdomainSecondary(t *testing.T) {
@@ -3601,6 +3954,30 @@ func TestConnectionDetailsSubdomainSecondary(t *testing.T) {
 		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.9", Host: "64.233.170.91", DestinationIP: "64.233.170.91", Process: "chrome", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 300, Download: 700, Count: 1},
 	})
 
+	// secondary is a CIDR-labeled IP — should return all connection details for that raw IP host
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '91.108.0.0/16', 'Telegram', 10, 1)`); err != nil {
+		t.Fatalf("insert label rule: %v", err)
+	}
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "91.108.56.111", DestinationIP: "91.108.56.111", Process: "", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 100, Download: 500, Count: 1},
+		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.3", Host: "91.108.56.111", DestinationIP: "91.108.56.111", Process: "", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 50, Download: 200, Count: 1},
+		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "8.8.8.8", DestinationIP: "8.8.8.8", Process: "", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 10, Download: 20, Count: 1},
+	})
+	details, err = svc.queryConnectionDetails("host", "Telegram", "91.108.56.111", 0, 60_000)
+	if err != nil {
+		t.Fatalf("queryConnectionDetails (CIDR label): %v", err)
+	}
+	if len(details) != 2 {
+		t.Errorf("expected 2 detail rows for CIDR-labeled IP, got %d: %v", len(details), details)
+	}
+	cidrSourceIPs := make(map[string]bool)
+	for _, d := range details {
+		cidrSourceIPs[d.SourceIP] = true
+	}
+	if !cidrSourceIPs["192.168.1.2"] || !cidrSourceIPs["192.168.1.3"] {
+		t.Errorf("expected both source IPs in Telegram details, got %v", cidrSourceIPs)
+	}
+
 	details, err = svc.queryConnectionDetails("host", "64.233.170.91", "64.233.170.91", 0, 60_000)
 	if err != nil {
 		t.Fatalf("queryConnectionDetails (grouped IP host): %v", err)
@@ -3610,5 +3987,270 @@ func TestConnectionDetailsSubdomainSecondary(t *testing.T) {
 	}
 	if details[0].SourceIP != "192.168.1.9" || details[0].DestinationIP != "64.233.170.91" {
 		t.Fatalf("unexpected grouped IP host detail row: %+v", details[0])
+	}
+}
+
+func TestLoadLabelRules(t *testing.T) {
+	svc := newTestService(t)
+
+	// disabled rules are excluded
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '10.0.0.0/8', 'Internal', 10, 0)`); err != nil {
+		t.Fatalf("insert disabled rule: %v", err)
+	}
+	// enabled rules returned in priority order
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '91.108.0.0/16', 'Telegram', 20, 1)`); err != nil {
+		t.Fatalf("insert rule: %v", err)
+	}
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('domain', '*.googlevideo.com', 'YouTube CDN', 10, 1)`); err != nil {
+		t.Fatalf("insert rule: %v", err)
+	}
+
+	rules, err := loadLabelRules(svc.db)
+	if err != nil {
+		t.Fatalf("loadLabelRules: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 enabled rules, got %d", len(rules))
+	}
+	// ordered by priority ASC: YouTube CDN (10) before Telegram (20)
+	if rules[0].Label != "YouTube CDN" {
+		t.Errorf("expected first rule label 'YouTube CDN', got %q", rules[0].Label)
+	}
+	if rules[1].Label != "Telegram" {
+		t.Errorf("expected second rule label 'Telegram', got %q", rules[1].Label)
+	}
+	for _, r := range rules {
+		if !r.Enabled {
+			t.Errorf("loadLabelRules returned a disabled rule: %+v", r)
+		}
+	}
+}
+
+func TestValidateLabelRule(t *testing.T) {
+	cases := []struct {
+		name    string
+		rule    labelRule
+		wantErr string
+	}{
+		{"valid domain", labelRule{Type: "domain", Pattern: "*.example.com", Label: "Ex", Priority: 0}, ""},
+		{"valid cidr", labelRule{Type: "cidr", Pattern: "10.0.0.0/8", Label: "LAN", Priority: 1}, ""},
+		{"invalid type", labelRule{Type: "regex", Pattern: "x", Label: "x", Priority: 0}, "type must be"},
+		{"empty pattern", labelRule{Type: "domain", Pattern: "", Label: "x", Priority: 0}, "pattern is required"},
+		{"invalid cidr pattern", labelRule{Type: "cidr", Pattern: "not-a-cidr", Label: "x", Priority: 0}, "valid CIDR"},
+		{"empty label", labelRule{Type: "domain", Pattern: "x.com", Label: "", Priority: 0}, "label is required"},
+		{"negative priority", labelRule{Type: "domain", Pattern: "x.com", Label: "x", Priority: -1}, "priority must be"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateLabelRule(tc.rule)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tc.wantErr)
+				} else if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("expected error containing %q, got %q", tc.wantErr, err.Error())
+				}
+			}
+		})
+	}
+}
+
+func TestLabelRulesCRUD(t *testing.T) {
+	svc := newTestService(t)
+
+	// CREATE
+	body := func(s string) *strings.Reader { return strings.NewReader(s) }
+	post := func(path, payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, body(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+	put := func(path, payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, path, body(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+	del := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+	patch := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, path, nil)
+		w := httptest.NewRecorder()
+		svc.handleLabelRules(w, req)
+		return w
+	}
+
+	// POST create
+	w := post("/api/label-rules", `{"type":"cidr","pattern":"91.108.0.0/16","label":"Telegram","priority":10,"enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST /api/label-rules: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var created labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created rule: %v", err)
+	}
+	if created.ID == 0 {
+		t.Error("expected non-zero ID in created rule")
+	}
+	if created.Label != "Telegram" {
+		t.Errorf("expected label 'Telegram', got %q", created.Label)
+	}
+
+	// GET list — should contain the created rule
+	w = get("/api/label-rules")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/label-rules: expected 200, got %d", w.Code)
+	}
+	var list []labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 1 || list[0].Label != "Telegram" {
+		t.Errorf("expected 1 rule 'Telegram', got %v", list)
+	}
+
+	// PUT update
+	idPath := fmt.Sprintf("/api/label-rules/%d", created.ID)
+	w = put(idPath, `{"type":"domain","pattern":"*.telegram.org","label":"Telegram Web","priority":5,"enabled":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT %s: expected 200, got %d: %s", idPath, w.Code, w.Body.String())
+	}
+	var updated labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode updated rule: %v", err)
+	}
+	if updated.Label != "Telegram Web" || updated.Type != "domain" {
+		t.Errorf("unexpected updated rule: %+v", updated)
+	}
+
+	// PATCH toggle — disable the rule
+	w = patch(idPath + "/toggle")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH toggle: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var toggled labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &toggled); err != nil {
+		t.Fatalf("decode toggled rule: %v", err)
+	}
+	if toggled.Enabled {
+		t.Error("expected rule to be disabled after toggle")
+	}
+
+	// GET list — disabled rule still appears in list
+	w = get("/api/label-rules")
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list after toggle: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("expected 1 rule in list after toggle, got %d", len(list))
+	}
+	if list[0].Enabled {
+		t.Error("expected rule to appear as disabled in list")
+	}
+
+	// DELETE
+	w = del(idPath)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DELETE %s: expected 204, got %d: %s", idPath, w.Code, w.Body.String())
+	}
+
+	// GET list — empty after delete
+	w = get("/api/label-rules")
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list after delete: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("expected empty list after delete, got %d rules", len(list))
+	}
+
+	// Validation errors
+	w = post("/api/label-rules", `{"type":"bad","pattern":"x","label":"x","priority":0,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid type, got %d", w.Code)
+	}
+	w = post("/api/label-rules", `{"type":"cidr","pattern":"not-a-cidr","label":"x","priority":0,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid CIDR, got %d", w.Code)
+	}
+	w = post("/api/label-rules", `{"type":"domain","pattern":"x","label":"","priority":0,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty label, got %d", w.Code)
+	}
+	w = post("/api/label-rules", `{"type":"domain","pattern":"","label":"x","priority":0,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty pattern, got %d", w.Code)
+	}
+	w = post("/api/label-rules", `{"type":"domain","pattern":"x.com","label":"x","priority":-1,"enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for negative priority, got %d", w.Code)
+	}
+
+	// Malformed JSON body
+	w = post("/api/label-rules", `{not json}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for malformed POST body, got %d", w.Code)
+	}
+
+	// Non-numeric ID
+	{
+		req := httptest.NewRequest(http.MethodPut, "/api/label-rules/abc", body(`{"type":"domain","pattern":"x.com","label":"X","priority":0,"enabled":true}`))
+		req.Header.Set("Content-Type", "application/json")
+		rw := httptest.NewRecorder()
+		svc.handleLabelRules(rw, req)
+		if rw.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for non-numeric id, got %d", rw.Code)
+		}
+	}
+
+	// PATCH toggle re-enables a disabled rule
+	w2 := post("/api/label-rules", `{"type":"domain","pattern":"*.example.com","label":"Example","priority":1,"enabled":false}`)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("POST for re-enable test: expected 201, got %d", w2.Code)
+	}
+	var r2 labelRule
+	if err := json.Unmarshal(w2.Body.Bytes(), &r2); err != nil {
+		t.Fatalf("decode rule: %v", err)
+	}
+	r2Path := fmt.Sprintf("/api/label-rules/%d/toggle", r2.ID)
+	w = patch(r2Path)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH toggle (enable): expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var re labelRule
+	if err := json.Unmarshal(w.Body.Bytes(), &re); err != nil {
+		t.Fatalf("decode re-enabled rule: %v", err)
+	}
+	if !re.Enabled {
+		t.Error("expected rule to be enabled after toggle from disabled state")
+	}
+
+	// Not found
+	w = del("/api/label-rules/99999")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing rule delete, got %d", w.Code)
+	}
+	w = put("/api/label-rules/99999", `{"type":"domain","pattern":"x.com","label":"X","priority":0,"enabled":true}`)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing rule update, got %d", w.Code)
+	}
+	w = patch("/api/label-rules/99999/toggle")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing rule toggle, got %d", w.Code)
 	}
 }

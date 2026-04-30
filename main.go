@@ -208,6 +208,15 @@ type hostTrafficWindow struct {
 	TotalBytes  int64
 }
 
+type labelRule struct {
+	ID       int64  `json:"id"`
+	Type     string `json:"type"`
+	Pattern  string `json:"pattern"`
+	Label    string `json:"label"`
+	Priority int    `json:"priority"`
+	Enabled  bool   `json:"enabled"`
+}
+
 func main() {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -388,6 +397,21 @@ func openDatabase(path string) (*sql.DB, error) {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_auto_switch_events_triggered_at ON auto_switch_events(triggered_at DESC);
+
+	CREATE TABLE IF NOT EXISTS label_rules (
+		id       INTEGER PRIMARY KEY AUTOINCREMENT,
+		type     TEXT    NOT NULL CHECK(type IN ('domain', 'cidr')),
+		pattern  TEXT    NOT NULL,
+		label    TEXT    NOT NULL,
+		priority INTEGER NOT NULL DEFAULT 100,
+		enabled  INTEGER NOT NULL DEFAULT 1
+	);
+
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_label_rules_pattern
+		ON label_rules(type, pattern);
+
+	CREATE INDEX IF NOT EXISTS idx_label_rules_priority
+		ON label_rules(priority ASC, id ASC);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -1739,6 +1763,53 @@ func normalizeHost(host string) string {
 	return parts[len(parts)-2] + "." + parts[len(parts)-1]
 }
 
+func loadLabelRules(db *sql.DB) ([]labelRule, error) {
+	rows, err := db.Query(`SELECT id, type, pattern, label, priority, enabled FROM label_rules WHERE enabled = 1 ORDER BY priority ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rules []labelRule
+	for rows.Next() {
+		var r labelRule
+		var enabled int
+		if err := rows.Scan(&r.ID, &r.Type, &r.Pattern, &r.Label, &r.Priority, &enabled); err != nil {
+			return nil, err
+		}
+		r.Enabled = enabled == 1
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
+}
+
+func applyLabel(host string, rules []labelRule, groupingEnabled bool) string {
+	if !groupingEnabled {
+		return host
+	}
+	for _, r := range rules {
+		switch r.Type {
+		case "domain":
+			if strings.HasPrefix(r.Pattern, "*.") {
+				if strings.HasSuffix(host, r.Pattern[1:]) {
+					return r.Label
+				}
+			} else if host == r.Pattern {
+				return r.Label
+			}
+		case "cidr":
+			if ip := net.ParseIP(host); ip != nil {
+				if _, cidr, err := net.ParseCIDR(r.Pattern); err == nil {
+					if cidr.Contains(ip) {
+						return r.Label
+					}
+				}
+			}
+		}
+	}
+	return normalizeHost(host)
+}
+
 func (s *service) addToAggregateBuffer(logs []trafficLog, nowMS int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1876,6 +1947,8 @@ func (s *service) routes() http.Handler {
 	mux.HandleFunc("/api/traffic/details", s.handleConnectionDetails)
 	mux.HandleFunc("/api/traffic/trend", s.handleTrend)
 	mux.HandleFunc("/api/traffic/logs", s.handleLogs)
+	mux.HandleFunc("/api/label-rules", s.handleLabelRules)
+	mux.HandleFunc("/api/label-rules/", s.handleLabelRules)
 	return s.withCORS(mux)
 }
 
@@ -1883,7 +1956,7 @@ func (s *service) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", defaultAllowedOrigin)
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2293,6 +2366,167 @@ func (s *service) handleLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (s *service) handleLabelRules(w http.ResponseWriter, r *http.Request) {
+	suffix := strings.TrimPrefix(r.URL.Path, "/api/label-rules")
+	suffix = strings.TrimPrefix(suffix, "/")
+
+	// Collection operations: GET list, POST create
+	if suffix == "" {
+		switch r.Method {
+		case http.MethodGet:
+			rows, err := s.db.Query(`SELECT id, type, pattern, label, priority, enabled FROM label_rules ORDER BY priority ASC, id ASC`)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			defer rows.Close()
+			var rules []labelRule
+			for rows.Next() {
+				var ru labelRule
+				var enabled int
+				if err := rows.Scan(&ru.ID, &ru.Type, &ru.Pattern, &ru.Label, &ru.Priority, &enabled); err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				ru.Enabled = enabled == 1
+				rules = append(rules, ru)
+			}
+			if err := rows.Err(); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if rules == nil {
+				rules = []labelRule{}
+			}
+			writeJSON(w, http.StatusOK, rules)
+		case http.MethodPost:
+			var payload labelRule
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("invalid json body"))
+				return
+			}
+			if err := validateLabelRule(payload); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			enabled := 0
+			if payload.Enabled {
+				enabled = 1
+			}
+			result, err := s.db.Exec(
+				`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES (?, ?, ?, ?, ?)`,
+				payload.Type, payload.Pattern, payload.Label, payload.Priority, enabled,
+			)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			id, _ := result.LastInsertId()
+			payload.ID = id
+			writeJSON(w, http.StatusCreated, payload)
+		default:
+			writeMethodNotAllowed(w)
+		}
+		return
+	}
+
+	// Item operations: PUT update, DELETE, PATCH toggle
+	parts := strings.SplitN(suffix, "/", 2)
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid rule id"))
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodPut && len(parts) == 1:
+		var payload labelRule
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid json body"))
+			return
+		}
+		if err := validateLabelRule(payload); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		enabled := 0
+		if payload.Enabled {
+			enabled = 1
+		}
+		res, err := s.db.Exec(
+			`UPDATE label_rules SET type=?, pattern=?, label=?, priority=?, enabled=? WHERE id=?`,
+			payload.Type, payload.Pattern, payload.Label, payload.Priority, enabled, id,
+		)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			writeError(w, http.StatusNotFound, errors.New("rule not found"))
+			return
+		}
+		payload.ID = id
+		writeJSON(w, http.StatusOK, payload)
+
+	case r.Method == http.MethodDelete && len(parts) == 1:
+		res, err := s.db.Exec(`DELETE FROM label_rules WHERE id=?`, id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			writeError(w, http.StatusNotFound, errors.New("rule not found"))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	case r.Method == http.MethodPatch && len(parts) == 2 && parts[1] == "toggle":
+		var ru labelRule
+		var enabled int
+		err := s.db.QueryRow(`SELECT id, type, pattern, label, priority, enabled FROM label_rules WHERE id=?`, id).
+			Scan(&ru.ID, &ru.Type, &ru.Pattern, &ru.Label, &ru.Priority, &enabled)
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, errors.New("rule not found"))
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		newEnabled := 1 - enabled
+		if _, err := s.db.Exec(`UPDATE label_rules SET enabled=? WHERE id=?`, newEnabled, id); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		ru.Enabled = newEnabled == 1
+		writeJSON(w, http.StatusOK, ru)
+
+	default:
+		writeMethodNotAllowed(w)
+	}
+}
+
+func validateLabelRule(r labelRule) error {
+	if r.Type != "domain" && r.Type != "cidr" {
+		return errors.New("type must be 'domain' or 'cidr'")
+	}
+	if r.Pattern == "" {
+		return errors.New("pattern is required")
+	}
+	if r.Type == "cidr" {
+		if _, _, err := net.ParseCIDR(r.Pattern); err != nil {
+			return errors.New("pattern is not a valid CIDR")
+		}
+	}
+	if r.Label == "" {
+		return errors.New("label is required")
+	}
+	if r.Priority < 0 {
+		return errors.New("priority must be >= 0")
+	}
+	return nil
+}
+
 func (s *service) queryAggregate(dimension string, start, end int64, raw bool) ([]aggregatedData, error) {
 	column, err := dimensionColumn(dimension)
 	if err != nil {
@@ -2303,15 +2537,16 @@ func (s *service) queryAggregate(dimension string, start, end int64, raw bool) (
 		return nil, err
 	}
 	if column == "host" && !raw && s.currentDomainGroupingEnabled() {
-		rows = groupHostRows(rows)
+		rules, _ := loadLabelRules(s.db)
+		rows = groupHostRows(rows, rules, true)
 	}
 	return rows, nil
 }
 
-func groupHostRows(rows []aggregatedData) []aggregatedData {
+func groupHostRows(rows []aggregatedData, rules []labelRule, groupingEnabled bool) []aggregatedData {
 	merged := make(map[string]*aggregatedData, len(rows))
 	for _, row := range rows {
-		key := normalizeHost(row.Label)
+		key := applyLabel(row.Label, rules, groupingEnabled)
 		existing, ok := merged[key]
 		if !ok {
 			copyRow := row
@@ -2345,8 +2580,22 @@ func (s *service) querySubstats(dimension, label string, start, end int64) ([]ag
 		if !s.currentDomainGroupingEnabled() {
 			return nil, errors.New("host substats require domain grouping to be enabled")
 		}
-		hostFilter, hostArgs := s.hostFilterArgs(label)
-		return s.queryByFilters("host", hostFilter, hostArgs, start, end)
+		// Load all host rows then filter in memory using applyLabel.
+		// SQL LIKE matching only works for eTLD+1 labels but breaks for
+		// user-defined labels (e.g. a CIDR label "Telegram" whose raw
+		// stored values are bare IPs with no substring relation to the label).
+		rules, _ := loadLabelRules(s.db)
+		allRows, err := s.queryByFilters("host", "", nil, start, end)
+		if err != nil {
+			return nil, err
+		}
+		matched := make([]aggregatedData, 0)
+		for _, row := range allRows {
+			if applyLabel(row.Label, rules, true) == label {
+				matched = append(matched, row)
+			}
+		}
+		return matched, nil
 	}
 	return s.queryByFilters("host", column+" = ?", []any{label}, start, end)
 }
@@ -2382,14 +2631,14 @@ func (s *service) queryConnectionDetails(dimension, primary, secondary string, s
 		return nil, err
 	}
 	if dimension == "host" && s.currentDomainGroupingEnabled() {
-		if net.ParseIP(primary) != nil {
-			filter = "host = ?"
-			args = []any{secondary}
-		} else if net.ParseIP(secondary) == nil {
-			// secondary is a raw subdomain — show all source IPs for that host
+		rules, _ := loadLabelRules(s.db)
+		if applyLabel(secondary, rules, true) == primary {
+			// secondary is a raw host (subdomain or IP) whose applied label
+			// equals primary — show all connection details for that raw host.
 			filter = "host = ?"
 			args = []any{secondary}
 		} else {
+			// secondary is a source IP — filter by normalized host + device.
 			hostFilter, hostArgs := s.hostFilterArgs(primary)
 			filter = hostFilter + " AND source_ip = ?"
 			args = append(hostArgs, secondary)

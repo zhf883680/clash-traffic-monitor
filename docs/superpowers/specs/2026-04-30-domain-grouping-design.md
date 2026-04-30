@@ -18,6 +18,7 @@
 8. [Data Models & Schema](#8-data-models--schema)
 9. [Future Work](#9-future-work)
 10. [Phase 1 Implementation Tasks](#10-phase-1-implementation-tasks)
+11. [Phase 2 Implementation Tasks](#11-phase-2-implementation-tasks)
 
 ---
 
@@ -789,5 +790,220 @@ Before marking Phase 1 complete:
 | 4 | Substats LIKE match for normalized hosts | `main.go` | Low |
 | 5 | `?raw=1` passthrough param | `main.go` | Low |
 | 6 | Settings UI toggle | `web/` | Low |
+| 7 | Unit tests | `main_test.go` | Medium |
+| 8 | Manual smoke test | — | Low |
+
+---
+
+## 11. Phase 2 Implementation Tasks
+
+All changes are in `main.go` and `web/` unless noted. Phase 1 must be complete before starting Phase 2.
+
+---
+
+### Task 1: `label_rules` DB schema
+
+**File:** `main.go`  
+**Location:** `openDatabase()`, alongside existing `CREATE TABLE` statements
+
+1a. Add the table and indexes from §8.2:
+
+```go
+_, err = db.Exec(`
+    CREATE TABLE IF NOT EXISTS label_rules (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        type     TEXT    NOT NULL CHECK(type IN ('domain', 'cidr')),
+        pattern  TEXT    NOT NULL,
+        label    TEXT    NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 100,
+        enabled  INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_label_rules_pattern
+        ON label_rules(type, pattern);
+    CREATE INDEX IF NOT EXISTS idx_label_rules_priority
+        ON label_rules(priority ASC, id ASC);
+`)
+```
+
+1b. No migration needed — `CREATE TABLE IF NOT EXISTS` is idempotent against existing databases.
+
+---
+
+### Task 2: `labelRule` struct + `loadLabelRules()`
+
+**File:** `main.go`  
+**Location:** Alongside existing struct definitions and helper functions
+
+2a. Define the struct (from §8.3):
+
+```go
+type labelRule struct {
+    ID       int64  `json:"id"`
+    Type     string `json:"type"`
+    Pattern  string `json:"pattern"`
+    Label    string `json:"label"`
+    Priority int    `json:"priority"`
+    Enabled  bool   `json:"enabled"`
+}
+```
+
+2b. Implement `loadLabelRules(db *sql.DB) ([]labelRule, error)`:
+- `SELECT id, type, pattern, label, priority, enabled FROM label_rules WHERE enabled = 1 ORDER BY priority ASC, id ASC`
+- Return the slice; caller logs and ignores error if non-critical
+
+---
+
+### Task 3: `applyLabel()` function
+
+**File:** `main.go`  
+**Location:** After `normalizeHost()`, before query handlers
+
+Implement `applyLabel(host string, rules []labelRule, groupingEnabled bool) string` per §4.2 and §6.3:
+
+```go
+func applyLabel(host string, rules []labelRule, groupingEnabled bool) string {
+    if !groupingEnabled {
+        return host
+    }
+    for _, r := range rules {
+        switch r.Type {
+        case "domain":
+            if strings.HasPrefix(r.Pattern, "*.") {
+                if strings.HasSuffix(host, r.Pattern[1:]) {
+                    return r.Label
+                }
+            } else if host == r.Pattern {
+                return r.Label
+            }
+        case "cidr":
+            if ip := net.ParseIP(host); ip != nil {
+                if _, cidr, err := net.ParseCIDR(r.Pattern); err == nil {
+                    if cidr.Contains(ip) {
+                        return r.Label
+                    }
+                }
+            }
+        }
+    }
+    return normalizeHost(host)
+}
+```
+
+Note: invalid CIDR patterns are silently skipped (the `err == nil` guard). Pre-parsing CIDRs in `loadLabelRules` is a future optimization (§9.3).
+
+---
+
+### Task 4: Wire `applyLabel` into query handlers
+
+**File:** `main.go`  
+**Location:** `queryAggregate()` and any callers that call `normalizeHost()` directly
+
+4a. In `queryAggregate()` (and equivalent merge path in `queryByFilters()`):
+- Load rules once per request: `rules, _ := loadLabelRules(svc.db)`
+- Replace `normalizeHost(row.Label)` with `applyLabel(row.Label, rules, groupingEnabled)`
+
+4b. The merge-by-key logic introduced in Phase 1 (Task 3) is unchanged — it already keys on the normalized/labeled string, so CIDR-labeled rows (e.g., multiple IPs all resolving to `"Telegram"`) will merge correctly.
+
+4c. `handleSubstats` remains unaffected — it still calls with `groupingEnabled=false` so raw subdomains are shown in drill-down.
+
+---
+
+### Task 5: `handleLabelRules` CRUD handler
+
+**File:** `main.go`  
+**Location:** Alongside existing `handle*` functions; routes registered near line 1743
+
+5a. Implement a single `handleLabelRules(w http.ResponseWriter, r *http.Request)` function dispatching on method and path suffix:
+
+| Method | Path suffix | Action |
+|---|---|---|
+| `GET` | `/api/label-rules` | List all rules (including disabled), ordered by priority |
+| `POST` | `/api/label-rules` | Create rule — validate type, pattern, label; return 201 + created object |
+| `PUT` | `/api/label-rules/{id}` | Full update of type/pattern/label/priority/enabled |
+| `DELETE` | `/api/label-rules/{id}` | Delete by id; return 204 |
+| `PATCH` | `/api/label-rules/{id}/toggle` | Flip `enabled` 0↔1; return updated object |
+
+5b. Validation for POST/PUT (per §7.5):
+- `type` ∈ `{"domain", "cidr"}`
+- `pattern` non-empty; for `cidr`, must pass `net.ParseCIDR`
+- `label` non-empty
+- `priority` >= 0
+
+5c. Register routes in the existing route block:
+```go
+mux.HandleFunc("/api/label-rules", svc.handleLabelRules)
+mux.HandleFunc("/api/label-rules/", svc.handleLabelRules)
+```
+
+---
+
+### Task 6: Settings UI — Label Rules panel
+
+**File:** `web/app.js`, `web/index.html`, `web/styles.css`
+
+6a. Add a "Label Rules" section below the existing domain-grouping toggle in the Settings modal (see §6.4 wireframe).
+
+6b. On modal open: `GET /api/label-rules` → render the rules table with Edit / Delete / Toggle controls.
+
+6c. "Add Rule" button: show an inline form with fields for Type, Pattern, Label, Priority; `POST /api/label-rules` on submit.
+
+6d. Edit (`✎`): populate the inline form with the selected rule's values; `PUT /api/label-rules/{id}` on save.
+
+6e. Delete (`✗`): confirm then `DELETE /api/label-rules/{id}`; remove row from table.
+
+6f. Toggle checkbox: `PATCH /api/label-rules/{id}/toggle`; update row enabled state in place.
+
+6g. After any write, reload the active tab's traffic data so label changes take effect immediately (same pattern as the Phase 1 toggle).
+
+---
+
+### Task 7: Unit tests
+
+**File:** `main_test.go`
+
+7a. `TestApplyLabel`:
+- CIDR match: IP in range → label returned
+- CIDR no-match: IP outside range → falls back to `normalizeHost`
+- Wildcard domain: `r1---sn.googlevideo.com` + rule `*.googlevideo.com → "YouTube CDN"` → `"YouTube CDN"`
+- Exact domain: `telegram.org` + rule → label
+- Grouping disabled: rules present but `groupingEnabled=false` → raw host returned
+- Priority order: two rules match — lower priority number wins
+- Invalid CIDR in rule: skipped without panic, fallback used
+
+7b. `TestLoadLabelRules`:
+- Disabled rules excluded from result
+- Results ordered by priority ASC, id ASC
+
+7c. `TestLabelRulesCRUD` (uses in-memory `:memory:` SQLite):
+- Create, read, update, delete, toggle a rule via the DB layer
+
+---
+
+### Task 8: Integration smoke test (manual)
+
+Before marking Phase 2 complete:
+
+- [ ] Build and run: `go build -o traffic-monitor main.go && ./traffic-monitor`
+- [ ] Open Settings → Label Rules; add a CIDR rule `91.108.0.0/16 → Telegram` with priority 10
+- [ ] Verify IPs in that range show as "Telegram" in the host tab
+- [ ] Click "Telegram" → substats shows individual raw IPs
+- [ ] Add a wildcard rule `*.googlevideo.com → YouTube CDN`; verify it overrides the eTLD+1 grouping
+- [ ] Disable the rule → traffic reverts to `googlevideo.com` label
+- [ ] Delete the rule → removed from list, traffic still grouped by eTLD+1
+- [ ] Toggle domain grouping off → all rules ignored, raw hosts shown
+- [ ] `go test ./...` passes
+
+---
+
+### Phase 2 Task Summary
+
+| # | Task | Scope | Complexity |
+|---|---|---|---|
+| 1 | `label_rules` DB schema | `main.go` (`openDatabase`) | Low |
+| 2 | `labelRule` struct + `loadLabelRules()` | `main.go` | Low |
+| 3 | `applyLabel()` function | `main.go` | Medium |
+| 4 | Wire `applyLabel` into query handlers | `main.go` | Low |
+| 5 | `handleLabelRules` CRUD handler + routes | `main.go` | Medium |
+| 6 | Settings UI — Label Rules panel | `web/` | High |
 | 7 | Unit tests | `main_test.go` | Medium |
 | 8 | Manual smoke test | — | Low |

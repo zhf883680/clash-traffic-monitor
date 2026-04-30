@@ -178,6 +178,7 @@ select {
   border: 0;
   background: transparent;
   color: var(--text);
+  font-size: 12px;
   min-width: 0;
 }
 
@@ -484,10 +485,22 @@ select {
   color: var(--text);
 }
 
-.settings-field input:focus {
+.settings-field input:focus,
+.settings-field select:focus {
   outline: none;
   border-color: rgba(95, 70, 255, 0.38);
   box-shadow: 0 0 0 3px rgba(95, 70, 255, 0.12);
+}
+
+.settings-field select {
+  min-height: 48px;
+  width: 100%;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
 }
 
 .settings-actions {
@@ -1334,6 +1347,112 @@ th {
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
+}
+
+.label-rules-section {
+  margin-top: 16px;
+  padding: 18px;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(246, 249, 253, 0.96)),
+    #fff;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 14px;
+}
+
+.label-rules-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.label-rules-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.label-rules-desc {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.label-rule-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.label-rule-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.label-rules-notice {
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(61, 184, 255, 0.10);
+  border: 1px solid rgba(61, 184, 255, 0.28);
+  color: #1a6b95;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.label-rules-table-wrap {
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(248, 251, 255, 0.94);
+}
+
+.label-rules-table {
+  min-width: 560px;
+}
+
+.rule-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.rule-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--muted-strong);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.rule-btn:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  box-shadow: 0 4px 10px rgba(95, 70, 255, 0.12);
+}
+
+.rule-btn.delete-rule-btn:hover {
+  border-color: rgba(255, 109, 122, 0.4);
+  color: var(--danger);
+  box-shadow: 0 4px 10px rgba(255, 109, 122, 0.12);
 }
 
 @media (max-width: 1180px) {
