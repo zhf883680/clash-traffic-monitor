@@ -3354,7 +3354,7 @@ func TestGroupHostRows(t *testing.T) {
 		{Label: "www.youtube.com", Upload: 10, Download: 20, Total: 30, Count: 1},
 		{Label: "91.108.56.111", Upload: 5, Download: 5, Total: 10, Count: 1},
 	}
-	got := groupHostRows(rows)
+	got := groupHostRows(rows, nil, true)
 
 	byLabel := make(map[string]aggregatedData, len(got))
 	for _, r := range got {
@@ -3387,6 +3387,38 @@ func TestGroupHostRows(t *testing.T) {
 
 	if len(got) != 3 {
 		t.Errorf("expected 3 rows after grouping, got %d", len(got))
+	}
+}
+
+func TestGroupHostRowsWithRules(t *testing.T) {
+	rules := []labelRule{
+		{ID: 1, Type: "cidr", Pattern: "91.108.56.0/24", Label: "Telegram", Priority: 10, Enabled: true},
+	}
+	rows := []aggregatedData{
+		{Label: "91.108.56.111", Upload: 100, Download: 200, Total: 300, Count: 1},
+		{Label: "91.108.56.112", Upload: 50, Download: 100, Total: 150, Count: 2},
+		{Label: "www.youtube.com", Upload: 10, Download: 20, Total: 30, Count: 1},
+	}
+	got := groupHostRows(rows, rules, true)
+
+	byLabel := make(map[string]aggregatedData, len(got))
+	for _, r := range got {
+		byLabel[r.Label] = r
+	}
+
+	tg, ok := byLabel["Telegram"]
+	if !ok {
+		t.Fatal("expected Telegram label from CIDR rule")
+	}
+	if tg.Upload != 150 || tg.Download != 300 || tg.Total != 450 || tg.Count != 3 {
+		t.Errorf("Telegram unexpected: %+v", tg)
+	}
+
+	if _, ok := byLabel["youtube.com"]; !ok {
+		t.Fatal("expected youtube.com via normalizeHost fallback")
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 rows, got %d", len(got))
 	}
 }
 
@@ -3537,6 +3569,39 @@ func TestQuerySubstatsHostGrouping(t *testing.T) {
 		_, err := svc.querySubstats("host", "googlevideo.com", 0, 60_000)
 		if err == nil {
 			t.Fatal("expected error for host substats when grouping disabled")
+		}
+	})
+
+	t.Run("returns raw IPs for user-defined CIDR label", func(t *testing.T) {
+		svc := newTestService(t)
+		if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '91.108.0.0/16', 'Telegram', 10, 1)`); err != nil {
+			t.Fatalf("insert label rule: %v", err)
+		}
+		insertTestAggregates(t, svc.db, []aggregatedEntry{
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "91.108.56.111", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 100, Download: 200, Count: 1},
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "91.108.56.100", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 50, Download: 80, Count: 2},
+			{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "8.8.8.8", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 10, Download: 20, Count: 1},
+		})
+
+		rows, err := svc.querySubstats("host", "Telegram", 0, 60_000)
+		if err != nil {
+			t.Fatalf("querySubstats: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Errorf("expected 2 Telegram IP rows, got %d: %v", len(rows), rows)
+		}
+		byLabel := make(map[string]aggregatedData)
+		for _, r := range rows {
+			byLabel[r.Label] = r
+		}
+		if _, ok := byLabel["91.108.56.111"]; !ok {
+			t.Error("expected 91.108.56.111 in Telegram substats")
+		}
+		if _, ok := byLabel["91.108.56.100"]; !ok {
+			t.Error("expected 91.108.56.100 in Telegram substats")
+		}
+		if _, ok := byLabel["8.8.8.8"]; ok {
+			t.Error("8.8.8.8 should not appear in Telegram substats")
 		}
 	})
 
@@ -3703,6 +3768,30 @@ func TestConnectionDetailsSubdomainSecondary(t *testing.T) {
 	insertTestAggregates(t, svc.db, []aggregatedEntry{
 		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.9", Host: "64.233.170.91", DestinationIP: "64.233.170.91", Process: "chrome", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 300, Download: 700, Count: 1},
 	})
+
+	// secondary is a CIDR-labeled IP — should return all connection details for that raw IP host
+	if _, err := svc.db.Exec(`INSERT INTO label_rules (type, pattern, label, priority, enabled) VALUES ('cidr', '91.108.0.0/16', 'Telegram', 10, 1)`); err != nil {
+		t.Fatalf("insert label rule: %v", err)
+	}
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "91.108.56.111", DestinationIP: "91.108.56.111", Process: "", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 100, Download: 500, Count: 1},
+		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.3", Host: "91.108.56.111", DestinationIP: "91.108.56.111", Process: "", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 50, Download: 200, Count: 1},
+		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "8.8.8.8", DestinationIP: "8.8.8.8", Process: "", Outbound: "NodeA", Chains: `["NodeA"]`, Upload: 10, Download: 20, Count: 1},
+	})
+	details, err = svc.queryConnectionDetails("host", "Telegram", "91.108.56.111", 0, 60_000)
+	if err != nil {
+		t.Fatalf("queryConnectionDetails (CIDR label): %v", err)
+	}
+	if len(details) != 2 {
+		t.Errorf("expected 2 detail rows for CIDR-labeled IP, got %d: %v", len(details), details)
+	}
+	cidrSourceIPs := make(map[string]bool)
+	for _, d := range details {
+		cidrSourceIPs[d.SourceIP] = true
+	}
+	if !cidrSourceIPs["192.168.1.2"] || !cidrSourceIPs["192.168.1.3"] {
+		t.Errorf("expected both source IPs in Telegram details, got %v", cidrSourceIPs)
+	}
 
 	details, err = svc.queryConnectionDetails("host", "64.233.170.91", "64.233.170.91", 0, 60_000)
 	if err != nil {

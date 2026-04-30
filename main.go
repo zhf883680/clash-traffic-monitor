@@ -2374,15 +2374,16 @@ func (s *service) queryAggregate(dimension string, start, end int64, raw bool) (
 		return nil, err
 	}
 	if column == "host" && !raw && s.currentDomainGroupingEnabled() {
-		rows = groupHostRows(rows)
+		rules, _ := loadLabelRules(s.db)
+		rows = groupHostRows(rows, rules, true)
 	}
 	return rows, nil
 }
 
-func groupHostRows(rows []aggregatedData) []aggregatedData {
+func groupHostRows(rows []aggregatedData, rules []labelRule, groupingEnabled bool) []aggregatedData {
 	merged := make(map[string]*aggregatedData, len(rows))
 	for _, row := range rows {
-		key := normalizeHost(row.Label)
+		key := applyLabel(row.Label, rules, groupingEnabled)
 		existing, ok := merged[key]
 		if !ok {
 			copyRow := row
@@ -2416,8 +2417,22 @@ func (s *service) querySubstats(dimension, label string, start, end int64) ([]ag
 		if !s.currentDomainGroupingEnabled() {
 			return nil, errors.New("host substats require domain grouping to be enabled")
 		}
-		hostFilter, hostArgs := s.hostFilterArgs(label)
-		return s.queryByFilters("host", hostFilter, hostArgs, start, end)
+		// Load all host rows then filter in memory using applyLabel.
+		// SQL LIKE matching only works for eTLD+1 labels but breaks for
+		// user-defined labels (e.g. a CIDR label "Telegram" whose raw
+		// stored values are bare IPs with no substring relation to the label).
+		rules, _ := loadLabelRules(s.db)
+		allRows, err := s.queryByFilters("host", "", nil, start, end)
+		if err != nil {
+			return nil, err
+		}
+		matched := make([]aggregatedData, 0)
+		for _, row := range allRows {
+			if applyLabel(row.Label, rules, true) == label {
+				matched = append(matched, row)
+			}
+		}
+		return matched, nil
 	}
 	return s.queryByFilters("host", column+" = ?", []any{label}, start, end)
 }
@@ -2453,14 +2468,14 @@ func (s *service) queryConnectionDetails(dimension, primary, secondary string, s
 		return nil, err
 	}
 	if dimension == "host" && s.currentDomainGroupingEnabled() {
-		if net.ParseIP(primary) != nil {
-			filter = "host = ?"
-			args = []any{secondary}
-		} else if net.ParseIP(secondary) == nil {
-			// secondary is a raw subdomain — show all source IPs for that host
+		rules, _ := loadLabelRules(s.db)
+		if applyLabel(secondary, rules, true) == primary {
+			// secondary is a raw host (subdomain or IP) whose applied label
+			// equals primary — show all connection details for that raw host.
 			filter = "host = ?"
 			args = []any{secondary}
 		} else {
+			// secondary is a source IP — filter by normalized host + device.
 			hostFilter, hostArgs := s.hostFilterArgs(primary)
 			filter = hostFilter + " AND source_ip = ?"
 			args = append(hostArgs, secondary)
