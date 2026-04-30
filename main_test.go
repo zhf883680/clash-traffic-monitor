@@ -3153,12 +3153,13 @@ func newTestService(t *testing.T) *service {
 	})
 
 	return &service{
-		db:                    db,
-		now:                   time.Now,
-		domainGroupingEnabled: loadDomainGroupingEnabled(db),
-		lastConnections:       make(map[string]connection),
-		aggregateBuffer:       make(map[string]*aggregatedEntry),
-		hostMinuteWindows:     make(map[string]*hostTrafficWindow),
+		db:                     db,
+		now:                    time.Now,
+		domainGroupingEnabled:  loadDomainGroupingEnabled(db),
+		aggregateRetentionDays: loadRetentionDays(db),
+		lastConnections:        make(map[string]connection),
+		aggregateBuffer:        make(map[string]*aggregatedEntry),
+		hostMinuteWindows:      make(map[string]*hostTrafficWindow),
 	}
 }
 
